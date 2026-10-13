@@ -4752,6 +4752,7 @@ dotLabel.textContent = lightBtn.classList.contains("adl")
     </div>
 
     <div class="settings-grid">
+      ${this._renderConfigParity(d)}
       <!-- RESIDENCE / HOME -->
       <div class="panel">
         <div class="head">
@@ -5889,6 +5890,86 @@ ${this._renderExcludedEntities(d)}
 
   // ─── Event wiring ────────────────────────────────────────────────────────
 
+  // ── Config-flow parity cards (9.19.0) ──────────────────────────────────────
+  // Every non-secret field from the integration's Configure flow, mirrored into
+  // the main panel. Secrets (provider API keys, the IMAP password) stay in the
+  // config flow / secrets.yaml and are never entered here. Headings are mapped to
+  // sub-sections in _stampSettingsSections(); controls use the shared cfg-field /
+  // toggle wiring (bedroom areas use the dedicated chip handler, like lab areas).
+  _renderConfigParity(d) {
+    const c = (d && d.config) || {};
+    const esc = (v) => this._esc(String(v == null ? '' : v));
+    const tog = (key, on) =>
+      `<button class="toggle-btn ${on ? 'on' : 'off'}" data-cfg-key="${key}" data-cfg-val="${on ? 'false' : 'true'}">${on ? 'ON' : 'OFF'}</button>`;
+    const presets = Array.isArray(c.directive_presets) ? c.directive_presets : [];
+    const areas = (d && d.areasGrid) || [];
+    const bed = Array.isArray(c.bedroom_areas) ? c.bedroom_areas : [];
+    const bedChips = areas.length
+      ? areas.map(a => `<button class="area-chip ${bed.includes(a.id) ? 'on' : ''}" data-bedroom-area="${esc(a.id)}">${esc(a.name)}</button>`).join('')
+      : '<span class="mode-bind-empty">No rooms detected yet.</span>';
+
+    return `
+      <!-- PERSONA & CORE (config-flow parity) -->
+      <div class="panel">
+        <div class="head"><span>Persona &amp; Core</span><span class="side">IDENTITY · DIRECTIVE</span></div>
+        <div class="mem-sub">Who JARVIS is and how it addresses you. A custom directive overrides the preset when set.</div>
+        <div class="home-cfg">
+          <div class="cfg-row"><label>Form of address</label><input class="cfg-field cfg-text" type="text" data-cfg-key="honorific" value="${esc(c.honorific || '')}" placeholder="sir"></div>
+          <div class="cfg-row"><label>Directive preset</label><select class="cfg-field" data-cfg-key="directive_preset">${this._opts(presets, String(c.directive_preset || ''))}</select></div>
+          <div class="cfg-row"><label>Custom directive <span class="mode-bind-sub">overrides preset</span></label><textarea class="cfg-field cfg-text" data-cfg-key="directive" rows="3" placeholder="(optional) a custom standing directive">${esc(c.directive || '')}</textarea></div>
+          <div class="cfg-row"><label>Use Home Assistant LLM API</label>${tog('use_hass_api', c.use_hass_api !== false)}</div>
+          <div class="cfg-row"><label>LLM web-search fallback</label>${tog('web_research_llm_fallback', !!c.web_research_llm_fallback)}</div>
+        </div>
+      </div>
+
+      <!-- ROUTING (config-flow parity) -->
+      <div class="panel">
+        <div class="head"><span>Routing</span><span class="side">AREAS · BROADCAST</span></div>
+        <div class="mem-sub">Bedroom areas drive sleep detection during quiet hours. The broadcast group is the media_player JARVIS announces through.</div>
+        <div class="home-cfg">
+          <div class="cfg-row"><label>Bedroom areas <span class="mode-bind-sub">sleep detection</span></label><div class="area-chips" id="bedroom-area-chips">${bedChips}</div></div>
+          <div class="cfg-row"><label>Broadcast group <span class="mode-bind-sub">media_player</span></label><select class="cfg-field" data-cfg-key="broadcast_group">${this._mediaPlayerOptions(c.broadcast_group || '')}</select></div>
+        </div>
+      </div>
+
+      <!-- QUIET HOURS (config-flow parity) -->
+      <div class="panel">
+        <div class="head"><span>Quiet Hours</span><span class="side">${esc(c.observer_quiet_start || '22:00')}–${esc(c.observer_quiet_end || '07:00')}</span></div>
+        <div class="mem-sub">Between these times JARVIS stays quiet — proactive announcements, briefings and the Observer back off.</div>
+        <div class="home-cfg">
+          <div class="cfg-row"><label>Quiet start <span class="mode-bind-sub">HH:MM</span></label><input class="cfg-field cfg-text" type="text" inputmode="numeric" data-cfg-key="observer_quiet_start" value="${esc(c.observer_quiet_start || '22:00')}" placeholder="22:00"></div>
+          <div class="cfg-row"><label>Quiet end <span class="mode-bind-sub">HH:MM</span></label><input class="cfg-field cfg-text" type="text" inputmode="numeric" data-cfg-key="observer_quiet_end" value="${esc(c.observer_quiet_end || '07:00')}" placeholder="07:00"></div>
+        </div>
+      </div>
+
+      <!-- IDENTITY (config-flow parity) -->
+      <div class="panel">
+        <div class="head"><span>Identity</span><span class="side">RECOGNITION</span></div>
+        <div class="mem-sub">Per-person recognition. The voice-fingerprint tier needs a GPU; the face-match confidence lives in the Cameras card.</div>
+        <div class="home-cfg">
+          <div class="cfg-row"><label>Per-person recognition</label>${tog('identity_enabled', c.identity_enabled !== false)}</div>
+          <div class="cfg-row"><label>Voice fingerprint <span class="mode-bind-sub">needs a GPU</span></label>${tog('identity_voice_fingerprint', !!c.identity_voice_fingerprint)}</div>
+          <div class="cfg-row"><label>Voice recognition source</label><input class="cfg-field cfg-text" type="text" data-cfg-key="voice_recognition_source" value="${esc(c.voice_recognition_source || '')}" placeholder="(optional)"></div>
+          <div class="cfg-row"><label>Auto-enroll new voices</label>${tog('voice_recognition_auto_enroll', c.voice_recognition_auto_enroll !== false)}</div>
+        </div>
+      </div>
+
+      <!-- EMAIL / IMAP (config-flow parity; password stays in secrets.yaml) -->
+      <div class="panel">
+        <div class="head"><span>Email (IMAP)</span><span class="side">READ-ONLY INBOX</span></div>
+        <div class="mem-sub">Read-only inbox access. The <b>password is not entered here</b> — set it in Settings → Devices &amp; Services → JARVIS → Configure → Email (it lives in Home Assistant secrets.yaml).</div>
+        <div class="home-cfg">
+          <div class="cfg-row"><label>Enabled</label>${tog('imap_enabled', !!c.imap_enabled)}</div>
+          <div class="cfg-row"><label>Host</label><input class="cfg-field cfg-text" type="text" data-cfg-key="imap_host" value="${esc(c.imap_host || '')}" placeholder="imap.example.com"></div>
+          <div class="cfg-row"><label>Port</label><input class="cfg-field cfg-num" type="number" min="1" max="65535" step="1" data-cfg-key="imap_port" value="${c.imap_port ?? 993}" placeholder="993"></div>
+          <div class="cfg-row"><label>User</label><input class="cfg-field cfg-text" type="text" data-cfg-key="imap_user" value="${esc(c.imap_user || '')}" placeholder="you@example.com"></div>
+          <div class="cfg-row"><label>Folder</label><input class="cfg-field cfg-text" type="text" data-cfg-key="imap_folder" value="${esc(c.imap_folder || 'INBOX')}" placeholder="INBOX"></div>
+          <div class="cfg-row"><label>SSL</label>${tog('imap_ssl', c.imap_ssl !== false)}</div>
+        </div>
+      </div>
+    `;
+  }
+
   _stampSettingsSections() {
     // Assign each Settings card to a sub-section and record it on the element as
     // data-section. Runs while headings are still their original English text, so
@@ -5902,6 +5983,8 @@ ${this._renderExcludedEntities(d)}
     // disappears (a new/renamed card just shows under General until mapped).
     const MAP = {
       "Residence / Home": "general", "General": "general",
+      "Persona & Core": "general", "Routing": "general", "Identity": "general",
+      "Quiet Hours": "learning", "Email (IMAP)": "home",
       "Sub-Agents & Automation": "general",
       "Operational Mode": "general", "System Diagnostics": "general",
       "AI Models": "voice", "Briefings": "voice", "Voice Confirmation": "voice",
@@ -6603,7 +6686,21 @@ ${this._renderExcludedEntities(d)}
       });
     });
 
-    this.shadowRoot.querySelectorAll("select.cfg-field[data-cfg-key], input.cfg-field[data-cfg-key]").forEach(el => {
+    // Bedroom-area chips (config-flow parity) — same toggle-list pattern as lab
+    // areas; saves the full area-id list so sleep detection stays a real list.
+    this.shadowRoot.querySelectorAll("[data-bedroom-area]").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const id = btn.getAttribute("data-bedroom-area");
+        let cur = this._data().config?.bedroom_areas;
+        cur = Array.isArray(cur) ? cur.slice() : [];
+        const i = cur.indexOf(id);
+        if (i >= 0) cur.splice(i, 1); else cur.push(id);
+        try { await this._saveConfig("bedroom_areas", cur); } catch (_) {}
+        await this._fetchAndRender();
+      });
+    });
+
+    this.shadowRoot.querySelectorAll("select.cfg-field[data-cfg-key], input.cfg-field[data-cfg-key], textarea.cfg-field[data-cfg-key]").forEach(el => {
       if (el._cfgWired) return;
       el._cfgWired = true;
       el.addEventListener("change", async () => {

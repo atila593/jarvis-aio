@@ -575,6 +575,10 @@ async def ws_get_panel_data(
     """Return all data the panel needs for one render."""
     try:
         from . import ha_secrets
+        from .const import (
+            DIRECTIVE_PRESETS as _DIR_PRESETS,
+            DEFAULT_DIRECTIVE_PRESET as _DEF_DIR_PRESET,
+        )
         entry = _get_entry(hass)
 
         # ── Status flags ────────────────────────────────────────────────────
@@ -746,6 +750,28 @@ async def ws_get_panel_data(
             "config": {
                 "honorific": str(_runtime_opt(hass, entry, "honorific", DEFAULT_HONORIFIC)
                                  or DEFAULT_HONORIFIC),
+                # ── Config-flow parity (9.19.0): current values for the panel's
+                # mirrored settings. Secrets (api keys, imap password) are never
+                # surfaced here. ──
+                "observer_quiet_start": quiet_start,
+                "observer_quiet_end": quiet_end,
+                "bedroom_areas": list(bedroom_areas or []),
+                "broadcast_group": broadcast_group,
+                "directive_preset": str(_runtime_opt(hass, entry, "directive_preset", _DEF_DIR_PRESET)
+                                        or _DEF_DIR_PRESET),
+                "directive": str(_runtime_opt(hass, entry, "directive", "") or ""),
+                "directive_presets": list(_DIR_PRESETS.keys()),
+                "use_hass_api": bool(_runtime_opt(hass, entry, "use_hass_api", True)),
+                "identity_enabled": bool(_runtime_opt(hass, entry, "identity_enabled", True)),
+                "identity_voice_fingerprint": bool(_runtime_opt(hass, entry, "identity_voice_fingerprint", False)),
+                "voice_recognition_source": str(_runtime_opt(hass, entry, "voice_recognition_source", "") or ""),
+                "voice_recognition_auto_enroll": bool(_runtime_opt(hass, entry, "voice_recognition_auto_enroll", True)),
+                "imap_enabled": bool(_runtime_opt(hass, entry, "imap_enabled", False)),
+                "imap_host": str(_runtime_opt(hass, entry, "imap_host", "") or ""),
+                "imap_port": int(_runtime_opt(hass, entry, "imap_port", 993) or 993),
+                "imap_user": str(_runtime_opt(hass, entry, "imap_user", "") or ""),
+                "imap_folder": str(_runtime_opt(hass, entry, "imap_folder", "INBOX") or "INBOX"),
+                "imap_ssl": bool(_runtime_opt(hass, entry, "imap_ssl", True)),
                 "announcements_enabled": announcements_on,
                 "announce_notify_only": bool(_runtime_opt(hass, entry, "announce_notify_only", False)),
                 "sentinel_enabled": sentinel_on,
@@ -1556,6 +1582,27 @@ PANEL_WRITABLE_KEYS = {
     "appliance_power_guessing",     # bool: announce fingerprint/auto-discovered guesses
     "identity_min_confidence",      # float: face-match threshold below which a person is 'unknown'
     "ollama_num_ctx",               # int: Ollama context window for local models
+    # ── Config-flow parity (9.19.0): every non-secret options-flow field is now
+    # settable from the main panel too. Secrets (provider api_key, imap_secret_key)
+    # stay in the config flow / secrets.yaml and are deliberately NOT here.
+    "observer_quiet_start",         # str "HH:MM": quiet-hours start (proactive/observer back off)
+    "observer_quiet_end",           # str "HH:MM": quiet-hours end
+    "bedroom_areas",                # list[area_id]: rooms whose presence triggers sleep during quiet hours
+    "broadcast_group",              # str: media_player entity used as the announcement broadcast group
+    "honorific",                    # str: form of address (e.g. "sir")
+    "directive_preset",             # str: persona directive preset key
+    "directive",                    # str: custom standing directive (overrides the preset when set)
+    "use_hass_api",                 # bool: let JARVIS use Home Assistant's own LLM API tools
+    "identity_enabled",             # bool: per-person recognition master switch
+    "identity_voice_fingerprint",   # bool: voice-fingerprint identity tier (needs a GPU)
+    "voice_recognition_source",     # str: voice-recognition source identifier
+    "voice_recognition_auto_enroll",# bool: auto-enroll newly heard voices
+    "imap_enabled",                 # bool: read-only IMAP inbox access
+    "imap_host",                    # str: IMAP host
+    "imap_port",                    # int: IMAP port (default 993)
+    "imap_user",                    # str: IMAP username
+    "imap_folder",                  # str: IMAP folder (default INBOX)
+    "imap_ssl",                     # bool: IMAP over SSL
 }
 
 # ── Debug log ring buffer ────────────────────────────────────────────────────
@@ -1939,7 +1986,9 @@ async def ws_compute_camera_coverage(
 @websocket_api.websocket_command({
     vol.Required("type"): "jarvis/update_config",
     vol.Required("key"): str,
-    vol.Required("value"): vol.Any(bool, str, int, float, None),
+    # list/dict are accepted so area/entity multi-selects (e.g. bedroom_areas,
+    # lab_areas) can be saved as real JSON values rather than only scalars.
+    vol.Required("value"): vol.Any(bool, str, int, float, list, dict, None),
 })
 @websocket_api.async_response
 async def ws_update_config(

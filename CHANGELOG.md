@@ -1,3 +1,38 @@
+## [9.19.0] — Every config-flow setting is now in the main panel (incl. quiet hours)
+
+The integration's **Configure** flow (Settings → Devices & Services → JARVIS)
+held a handful of settings the main JARVIS panel didn't — quiet hours among them.
+Those are now mirrored into the panel's own Settings so you rarely need the
+config flow at all.
+
+**Added to the panel Settings (new cards):**
+- **Quiet Hours** — `observer_quiet_start` / `observer_quiet_end` (HH:MM). The
+  window where proactive announcements, briefings and the Observer back off.
+- **Persona & Core** — form of address (`honorific`), directive preset, a custom
+  directive (overrides the preset), the Home Assistant LLM-API toggle, and the
+  web-search fallback.
+- **Routing** — bedroom areas (sleep detection) as area chips, and the broadcast
+  group (`media_player`).
+- **Identity** — per-person recognition on/off, the voice-fingerprint tier,
+  voice-recognition source, and auto-enroll.
+- **Email (IMAP)** — enabled, host, port, user, folder, SSL.
+
+**Deliberately NOT in the panel:** credentials. Provider **API keys** and the
+**IMAP password** stay in the config flow / `secrets.yaml` — the panel is visible
+to anyone with access to it, so secrets never appear there. The Email card points
+you to the config flow for the password.
+
+**Under the hood:**
+- `jarvis/update_config` now accepts list/dict values (so area multi-selects save
+  as real lists — this also hardens the existing Lab-areas control).
+- `get_panel_data` surfaces the mirrored fields' current values; 18 non-secret
+  option keys were added to the panel's write allowlist.
+- A new parity **test** (`test_panel_config_parity.py`) locks the contract: every
+  non-secret Configure-flow field must be panel-writable AND shown, and the two
+  secrets must never be panel-writable — so the surfaces can't silently drift
+  apart again.
+- **Version** — manifest 9.18.1 → **9.19.0** (minor: new user-facing capability).
+
 ## [9.18.1] — Ollama setup hardening (edge cases from the #383 review)
 
 Follow-up hardening to the 9.18.0 Ollama fix, from a stress-test of the full
