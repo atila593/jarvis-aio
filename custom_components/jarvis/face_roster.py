@@ -97,6 +97,33 @@ def is_resident(name: str) -> bool:
     return _normalize(name) in _roster
 
 
+# Names the vision backend uses for "no identity" — these are strangers, not
+# guests. Kept in step with ``recognition._is_unknown``.
+_UNKNOWN_NAMES = frozenset({"", "unknown", "unknown person", "unknown_face"})
+
+
+def is_guest(name: str) -> bool:
+    """Whether ``name`` is a recognized *guest* — a person the vision backend
+    identified by name who is NOT a flagged household resident (a friend,
+    relative or other visitor). Blank/unknown names are strangers, not guests,
+    so they return False (issue #388). Never raises."""
+    if (name or "").strip().lower() in _UNKNOWN_NAMES:
+        return False
+    return not is_resident(name)
+
+
+def relationship(name: str) -> str:
+    """Classify a recognized person as ``"resident"``, ``"guest"`` or
+    ``"unknown"``. This is the single source of truth for the
+    household/guest/stranger distinction surfaced to Home Assistant automations
+    (the ``jarvis_face_recognized`` event) and the Faces panel (issue #388):
+    residents are flagged household members, guests are recognized people who
+    aren't, and unknown is an unidentified face. Never raises."""
+    if (name or "").strip().lower() in _UNKNOWN_NAMES:
+        return "unknown"
+    return "resident" if is_resident(name) else "guest"
+
+
 def add_resident(name: str) -> bool:
     """Flag ``name`` a resident. Returns True if it was newly added. Never raises."""
     key = _normalize(name)
