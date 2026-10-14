@@ -2208,6 +2208,26 @@ def _ollama_tags_url(base_url: str) -> str:
     return f"{base}/api/tags"
 
 
+_ALLOWED_FETCH_SCHEMES = ("http", "https")
+
+
+def _validate_fetch_url(url: str) -> str:
+    """Guard a provider's models endpoint before we fetch it: only http(s) is
+    allowed, so a configured ``base_url`` can't coerce the request into
+    ``file://``, ``gopher://`` or similar (SSRF hardening — GHSA-fx76-fcmp-phmq).
+
+    Private/loopback hosts stay allowed on purpose: a local LLM server (Ollama on
+    a LAN IP or ``localhost``) is the primary supported setup, so the trust
+    boundary for ``jarvis/list_models`` is its admin requirement, not an IP
+    allowlist. Returns ``url`` unchanged when valid; raises ``ValueError``
+    otherwise."""
+    from urllib.parse import urlsplit
+    scheme = urlsplit((url or "").strip()).scheme.lower()
+    if scheme not in _ALLOWED_FETCH_SCHEMES:
+        raise ValueError("provider endpoint must be an http(s) URL")
+    return url
+
+
 async def _fetch_models(hass, provider: str, api_key: str, base_url: str) -> list[str]:
     """
     Query a provider's models endpoint and return a sorted list of model IDs.
@@ -2246,11 +2266,15 @@ async def _fetch_models(hass, provider: str, api_key: str, base_url: str) -> lis
     else:
         raise ValueError(f"unknown provider: {provider}")
 
+    # SSRF hardening: only ever fetch http(s) endpoints (GHSA-fx76-fcmp-phmq).
+    _validate_fetch_url(url)
+
     async with async_timeout.timeout(12):
         async with session.get(url, headers=headers) as resp:
             if resp.status != 200:
-                body = await resp.text()
-                raise RuntimeError(f"HTTP {resp.status}: {body[:160]}")
+                # Do not reflect the upstream response body back to the caller —
+                # that is the information-exposure half of GHSA-fx76-fcmp-phmq.
+                raise RuntimeError(f"HTTP {resp.status}")
             data = await resp.json()
 
     # Normalise per provider
@@ -2284,6 +2308,7 @@ def _fetch_gemini_models(api_key: str) -> list[str]:
     return sorted(set(models))
 
 
+@websocket_api.require_admin
 @websocket_api.websocket_command({
     vol.Required("type"): "jarvis/list_models",
     vol.Required("provider"): str,
@@ -2291,7 +2316,12 @@ def _fetch_gemini_models(api_key: str) -> list[str]:
 })
 @websocket_api.async_response
 async def ws_list_models(hass: HomeAssistant, connection, msg) -> None:
-    """Return the live model list for a provider (Settings AI-Models dropdowns)."""
+    """Return the live model list for a provider (Settings AI-Models dropdowns).
+
+    Admin-only (GHSA-fx76-fcmp-phmq): the handler fetches a caller-influenced
+    provider endpoint, so it must not be reachable by non-admin users. Listing
+    models is a provider-configuration action, which is already admin territory.
+    """
     provider = (msg.get("provider") or "").lower()
     entry = _get_entry(hass)
     from . import ha_secrets
@@ -2307,9 +2337,18 @@ async def ws_list_models(hass: HomeAssistant, connection, msg) -> None:
         models = await _fetch_models(hass, provider, api_key, base_url)
         connection.send_result(msg["id"], {"provider": provider, "models": models})
     except Exception as exc:
+        # Log the specifics server-side only; return a generic message so the
+        # caller can't read back upstream responses/reachability
+        # (information-exposure half of GHSA-fx76-fcmp-phmq).
         _LOGGER.info("list_models(%s) failed: %s", provider, exc)
         connection.send_result(
-            msg["id"], {"provider": provider, "models": [], "error": str(exc)},
+            msg["id"],
+            {
+                "provider": provider,
+                "models": [],
+                "error": "could not retrieve models — check the provider URL and "
+                         "API key; see the Home Assistant logs for details",
+            },
         )
 
 def _get_memory_stats() -> dict:

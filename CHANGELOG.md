@@ -1,5 +1,30 @@
 ## [9.21.0] — Faces panel: enlarge snapshots + name a new face
 
+### Security — SSRF + missing authorization in `jarvis/list_models` (GHSA-fx76-fcmp-phmq)
+
+Fixes a **Moderate** server-side request forgery reported privately via a GitHub
+security advisory (CWE-862 + CWE-918). The `jarvis/list_models` websocket command
+was registered **without** an admin guard, so any authenticated **non-admin**
+Home Assistant user could invoke it and, with `provider: "custom"`, make the
+server issue an HTTP GET against an arbitrary client-supplied `base_url` (e.g. a
+cloud-metadata endpoint), with upstream errors reflected back to the caller.
+
+- **Authorization:** `jarvis/list_models` now requires admin
+  (`@websocket_api.require_admin`) — model listing is a provider-configuration
+  action, which is already admin territory. This closes the non-admin vector.
+- **SSRF hardening:** the resolved provider endpoint is restricted to `http(s)`
+  schemes before any request is made.
+- **Information exposure:** the handler no longer reflects upstream response
+  bodies / raw errors back to the caller — specifics are logged server-side only.
+- **By design,** private/loopback endpoints remain allowed (a local Ollama server
+  on a LAN IP or `localhost` is the primary supported setup); the admin
+  requirement is the trust boundary there.
+
+If you run JARVIS on a Home Assistant instance with non-admin users, **update to
+9.21.0**. Thanks to the reporter for the responsible disclosure.
+
+### Faces panel
+
 Follow-up to 9.20.0's resident/guest work, polishing the **Faces** panel's
 "Recently Seen" cards so you can actually identify and name the faces there.
 
