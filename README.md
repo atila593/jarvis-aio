@@ -47,7 +47,7 @@ Everything past this point — vision, doorbell analysis, the Iron Man HUD's liv
 
 **Safety & security.** Proactive monitoring for freezing pipes, smoke/CO/water, unauthorized entry, and nighttime lockdown — occupancy-gated so enforcement only happens when it should.
 
-**An Iron Man HUD dashboard.** A dark-cyan glassmorphism control panel with a live isometric 3D house, per-room occupancy glow, radial telemetry gauges, an event feed, a doorbell-training view, and surfaced automation suggestions.
+**An Iron Man HUD dashboard.** A dark-cyan glassmorphism control panel with a live isometric 3D house, per-room occupancy glow, radial telemetry gauges, an event feed, a doorbell-training view, and surfaced automation suggestions. [Get your own house in 3D →](#your-house-in-3d)
 
 <div align="center">
 <table border="0">
@@ -63,6 +63,16 @@ Everything past this point — vision, doorbell analysis, the Iron Man HUD's liv
 
 <sub>Screenshots from a live install. The dashboard runs in your browser inside Home Assistant.</sub>
 </div>
+
+## Your house in 3D
+
+The **Residence** tab draws a live 3D model of your home and lights up the rooms that are occupied, using the presence, motion and mmWave sensors JARVIS already watches. There are three ways to set it up, from quickest to most exact:
+
+1. **Pick a home style.** On the Residence tab, choose the closest match: Cape Cod, Colonial, Dutch Colonial, Ranch, Two-Story, Craftsman, Modern, Townhouse, Apartment or Cabin.
+2. **Draw your rooms.** In **Settings → Home → Floor Plan Editor**, use **+ Add Room** for each room. You can import a photo or scan of your floor plan as a background (**Import BG**) and trace over it, and add outdoor zones and your property line.
+3. **Import from SweetHome3D.** If you already have your home drawn in [SweetHome3D](https://www.sweethome3d.com/), the converter in `scripts/` turns it into a JARVIS floor plan, keeping exact room shapes and floors. See [Importing a floor plan](docs/floor-plan-import.md).
+
+Name each room after its Home Assistant **area** so occupancy lights up the right room. The plan isn't just for show: JARVIS uses which rooms connect to each other to follow a likely route inward when it investigates a possible intrusion.
 
 ## FAQ
 
