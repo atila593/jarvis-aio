@@ -1122,7 +1122,9 @@ setTimeout(async () => {
 
   // #140: on-the-fly labeling — build the reference dataset straight from
   // real-world detections instead of manual file uploads.
-  const _quentinAssignSel = _quentinCard?.querySelector("select[data-faces-assign]");
+  const _quentinLabelInput = _quentinCard?.querySelector("input.faces-label-input[list='faces-names-dl']");
+  const _quentinLabelBtn = _quentinCard?.querySelector("button[data-faces-label]");
+  const _namesDatalist = el.shadowRoot.getElementById("faces-names-dl");
   const _samCapBtn = _samCard?.querySelector('button[data-faces-capture="Sam"]');
   let _assignCall = null;
   const _origCallWS = el._hass.callWS.bind(el._hass);
@@ -1135,14 +1137,24 @@ setTimeout(async () => {
   await el._labelFaceAs(_quentinCard, "Sam");
   el._hass.callWS = _origCallWS;
   checks.push(
-    ["recently-seen card offers a 'Label as…' resident dropdown",
-      !!_quentinAssignSel && /Label as/.test(_quentinAssignSel.textContent)
-      && /<option value="Sam"/.test(_quentinAssignSel.innerHTML)],
+    ["recently-seen card offers a free-text 'Name this face' field (not a residents-only dropdown)",
+      !!_quentinLabelInput && !!_quentinLabelBtn],
+    ["the name field offers existing residents as datalist suggestions",
+      /<option value="Sam"/.test(_namesDatalist?.innerHTML || "")],
     ["resident card can enroll a reference from the last sighting",
       !!_samCapBtn],
-    ["labeling a sighting enrolls that frame as the resident's reference",
+    ["labeling a sighting enrolls that frame as the typed name's reference",
       !!_assignCall && _assignCall.name === "Sam"
       && /^data:image\//.test(String(_assignCall.image || ""))],
+  );
+
+  // #388 follow-up: clicking a snapshot opens an enlarged lightbox.
+  await el._openFaceLightbox(_quentinCard, "Unknown");
+  const _lightbox = el.shadowRoot.getElementById("faces-lightbox");
+  checks.push(
+    ["clicking a snapshot opens an enlarged lightbox",
+      !!_lightbox && _lightbox.style.display === "flex"
+      && /<img[^>]+src="data:image/.test(_lightbox.innerHTML)],
   );
 
   // #140-c: snapshot-from-camera-now — enroll a resident's reference from a live

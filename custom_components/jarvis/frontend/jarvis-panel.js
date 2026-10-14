@@ -8323,8 +8323,8 @@ ${this._renderExcludedEntities(d)}
         relation: r.relationship || (r.is_unknown ? "unknown" : "guest"),
         low_conf: !!r.is_low_confidence,
         actions: r.is_unknown ? [] : [{ label: "+ Resident", kind: "add", name: r.name }],
-        // Assign this sighting's frame to a household resident's reference (#140).
-        assignTargets: residents,
+        // Free-text "Name this face" field (residents offered as suggestions).
+        labelable: true,
       })).join("") + `</div>`;
     } else {
       html += `<div class="mmwave-empty">No guests or unknown faces seen recently. When your backend names a face that isn't a resident, it appears here as a guest.</div>`;
@@ -8334,6 +8334,12 @@ ${this._renderExcludedEntities(d)}
     if (f.recognition_source) {
       html += `<div class="faces-src">Reading identities from: <b>${this._esc(String(f.recognition_source))}</b> · each snapshot is the frame captured when JARVIS recognized the face (falls back to the live camera view until the next sighting).</div>`;
     }
+
+    // Shared suggestions for the "Name this face" fields: existing residents, so
+    // you can pick one quickly or type a brand-new name.
+    html += `<datalist id="faces-names-dl">`
+      + residents.map(n => `<option value="${this._esc(n)}"></option>`).join("")
+      + `</datalist>`;
 
     body.innerHTML = html;
     body.querySelectorAll("[data-faces-add]").forEach(el =>
@@ -8348,13 +8354,26 @@ ${this._renderExcludedEntities(d)}
     body.querySelectorAll("input[type=file][data-faces-ref]").forEach(inp =>
       inp.addEventListener("change", (e) => this._uploadFaceReference(
         inp.getAttribute("data-faces-ref"), e.target.files && e.target.files[0])));
-    // On-the-fly labeling (#140): assign a Recently-Seen frame to a resident…
-    body.querySelectorAll("select[data-faces-assign]").forEach(sel =>
-      sel.addEventListener("change", (e) => {
-        const name = e.currentTarget.value;
-        const card = e.currentTarget.closest(".faces-card");
-        e.currentTarget.value = "";
-        if (name && card) this._labelFaceAs(card, name);
+    // On-the-fly labeling (#140 / #388 follow-up): enroll a Recently-Seen frame
+    // under a typed name (a new person, or an existing resident from the
+    // suggestions) as that name's reference photo.
+    const labelFromCard = (el) => {
+      const card = el.closest(".faces-card");
+      const inp = card && card.querySelector(".faces-label-input");
+      const name = inp && inp.value.trim();
+      if (card && name) { inp.value = ""; this._labelFaceAs(card, name); }
+    };
+    body.querySelectorAll("button[data-faces-label]").forEach(btn =>
+      btn.addEventListener("click", () => labelFromCard(btn)));
+    body.querySelectorAll(".faces-label-input").forEach(inp =>
+      inp.addEventListener("keydown", (e) => { if (e.key === "Enter") labelFromCard(inp); }));
+    // Click any snapshot to enlarge it for identification (#388 follow-up).
+    body.querySelectorAll(".faces-thumb").forEach(th =>
+      th.addEventListener("click", () => {
+        const card = th.closest(".faces-card");
+        const cap = card && card.querySelector(".faces-card-name")
+          ? card.querySelector(".faces-card-name").textContent : "";
+        this._openFaceLightbox(card, cap);
       }));
     // …or enroll a resident's reference straight from their last sighting.
     body.querySelectorAll("button[data-faces-capture]").forEach(el =>
@@ -8462,9 +8481,40 @@ ${this._renderExcludedEntities(d)}
     }
   }
 
+  // Enlarge a face snapshot in a lightbox for identification (#388 follow-up).
+  // Prefers the frame already shown on the card; falls back to pulling one from
+  // the card's camera. Click anywhere (or Esc) to close.
+  async _openFaceLightbox(cardEl, caption) {
+    if (!cardEl || !this.shadowRoot) return;
+    const imgEl = cardEl.querySelector("img.faces-thumb-img");
+    const shown = imgEl && imgEl.getAttribute("src") && imgEl.style.display !== "none";
+    const src = shown ? imgEl.getAttribute("src") : await this._captureFaceImage(cardEl);
+    if (!src) { this._toast("✗ no snapshot to enlarge", "err"); return; }
+    let ov = this.shadowRoot.getElementById("faces-lightbox");
+    if (!ov) {
+      ov = document.createElement("div");
+      ov.id = "faces-lightbox";
+      ov.className = "faces-lightbox";
+      // Stable close + key handler stored on the node so any close path (click
+      // or Esc) detaches the document listener — no accumulation across opens.
+      ov._close = () => {
+        ov.style.display = "none";
+        ov.innerHTML = "";
+        document.removeEventListener("keydown", ov._onKey);
+      };
+      ov._onKey = (e) => { if (e.key === "Escape") ov._close(); };
+      ov.addEventListener("click", () => ov._close());
+      this.shadowRoot.appendChild(ov);
+    }
+    const cap = caption ? `<div class="faces-lightbox-cap">${this._esc(caption)}</div>` : "";
+    ov.innerHTML = `<div class="faces-lightbox-inner"><img src="${this._esc(src)}" alt="enlarged face"/>${cap}</div>`;
+    ov.style.display = "flex";
+    document.addEventListener("keydown", ov._onKey);
+  }
+
   // One face card: snapshot (or an initial placeholder) with the name under it.
   _faceCard({ name, camera_entity, camera, confidence, age_seconds, relation, actions,
-              snapshot_url, low_conf, ref_name, has_ref, ref_hint, assignTargets, can_capture }) {
+              snapshot_url, low_conf, ref_name, has_ref, ref_hint, labelable, can_capture }) {
     const safe = this._esc(name || "Unknown");
     const initial = this._esc((name || "?").trim().charAt(0).toUpperCase() || "?");
     let badge = relation === "resident" ? `<span class="faces-badge resident">RESIDENT</span>`
@@ -8514,23 +8564,26 @@ ${this._renderExcludedEntities(d)}
           + `</div>`;
       }
     }
-    // On-the-fly labeling for Recently-Seen cards: assign the shown frame to a
-    // household resident as their reference photo (#140).
-    let assignCtl = "";
-    if (Array.isArray(assignTargets) && assignTargets.length) {
-      assignCtl = `<div class="faces-card-assign"><select class="faces-assign-sel" data-faces-assign="1" aria-label="Assign this face to a resident">`
-        + `<option value="">📷 Label as…</option>`
-        + assignTargets.map(n => `<option value="${this._esc(n)}">${this._esc(n)}</option>`).join("")
-        + `</select></div>`;
+    // On-the-fly labeling for Recently-Seen cards (#140; extended per the #388
+    // follow-up): a free-text name field — with existing residents offered as
+    // suggestions via a shared datalist — enrolls the shown frame as that name's
+    // reference photo. Unlike the old residents-only dropdown, you can name a NEW
+    // person, and it sits right under the snapshot for quick identification.
+    let labelCtl = "";
+    if (labelable) {
+      labelCtl = `<div class="faces-card-label">`
+        + `<input class="faces-label-input" type="text" list="faces-names-dl" placeholder="Name this face…" aria-label="Name this face"/>`
+        + `<button class="btn faces-mark faces-label-btn" data-faces-label="1">Label</button>`
+        + `</div>`;
     }
     return `<div class="faces-card" data-cam="${this._esc(camera_entity || "")}">
-      <div class="faces-thumb">${thumb}${badge}</div>
+      <div class="faces-thumb" title="Click to enlarge">${thumb}${badge}</div>
+      ${labelCtl}
       <div class="faces-card-name">${safe}</div>
       <div class="faces-card-meta">${meta.join(" · ")}</div>
       ${acts ? `<div class="faces-card-act">${acts}</div>` : ""}
       ${refCtl ? `<div class="faces-card-ref">${refCtl}</div>` : ""}
       ${snapCtl}
-      ${assignCtl}
     </div>`;
   }
 
@@ -11309,7 +11362,8 @@ ${this._renderExcludedEntities(d)}
   .faces-section-sub { font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--text-dim); font-family: var(--font-mono); }
   .faces-gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 12px; }
   .faces-card { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 4px; }
-  .faces-thumb { position: relative; width: 100%; aspect-ratio: 1 / 1; border-radius: 10px; overflow: hidden; background: var(--panel-2, rgba(255,255,255,.04)); border: 1px solid var(--border, rgba(255,255,255,.1)); display: flex; align-items: center; justify-content: center; }
+  .faces-thumb { position: relative; width: 100%; aspect-ratio: 1 / 1; border-radius: 10px; overflow: hidden; background: var(--panel-2, rgba(255,255,255,.04)); border: 1px solid var(--border, rgba(255,255,255,.1)); display: flex; align-items: center; justify-content: center; cursor: zoom-in; }
+  .faces-thumb:hover { border-color: var(--cyan, #00f2fe); }
   .faces-thumb-img { width: 100%; height: 100%; object-fit: cover; }
   .faces-thumb-ph { font-size: 32px; font-weight: 600; color: var(--text-dim); font-family: var(--font-mono); }
   .faces-card-name { font-size: 13px; color: var(--text, #cfe); margin-top: 4px; word-break: break-word; }
@@ -11336,16 +11390,34 @@ ${this._renderExcludedEntities(d)}
   .faces-card-snap { margin-top: 4px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
   .faces-snap-cam { max-width: 140px; }
   .faces-snapnow { margin-left: 0; }
-  .faces-card-assign { margin-top: 4px; }
   .faces-assign-sel {
     font-size: 10px; font-family: var(--font-mono);
     padding: 3px 6px; border-radius: 6px;
     background: var(--panel-2, rgba(255,255,255,.05));
     border: 1px dashed var(--border, rgba(255,255,255,.2));
-    color: var(--text-dim); cursor: pointer; max-width: 100%;
+    color: var(--text, #cfe); cursor: pointer; max-width: 100%;
   }
   .faces-assign-sel:hover { border-color: var(--cyan, #00f2fe); color: var(--text, #cfe); }
   .faces-assign-sel:focus { outline: none; border-color: var(--cyan, #00f2fe); }
+  /* Native dropdown options render in a system popup; force a readable, solid
+     colour pair so they aren't near-invisible on the dim theme. */
+  .faces-panel select option, .faces-panel datalist option { color: #e8f4ff; background: #0d1b2a; }
+  /* Free-text "Name this face" labeling (#388 follow-up) */
+  .faces-card-label { margin-top: 6px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; justify-content: center; }
+  .faces-label-input {
+    font-size: 11px; font-family: var(--font-mono);
+    padding: 4px 7px; border-radius: 6px; width: 120px; max-width: 100%;
+    background: var(--panel-2, rgba(255,255,255,.05));
+    border: 1px solid var(--border, rgba(255,255,255,.2));
+    color: var(--text, #cfe);
+  }
+  .faces-label-input::placeholder { color: var(--text-dim); }
+  .faces-label-input:focus { outline: none; border-color: var(--cyan, #00f2fe); }
+  /* Snapshot lightbox (#388 follow-up) */
+  .faces-lightbox { position: fixed; inset: 0; z-index: 10000; background: rgba(0,0,0,.84); display: none; align-items: center; justify-content: center; cursor: zoom-out; padding: 24px; }
+  .faces-lightbox-inner { display: flex; flex-direction: column; align-items: center; gap: 10px; max-width: min(92vw, 720px); max-height: 92vh; }
+  .faces-lightbox img { max-width: 100%; max-height: 82vh; object-fit: contain; border-radius: 12px; border: 1px solid var(--border, rgba(255,255,255,.15)); box-shadow: 0 10px 44px rgba(0,0,0,.6); }
+  .faces-lightbox-cap { font-family: var(--font-mono); font-size: 13px; color: var(--text, #cfe); }
   /* Muted announcements (#181) */
   .mutes-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
   .mutes-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-family: var(--font-mono); background: var(--panel-2, rgba(255,255,255,.05)); border: 1px solid var(--border, rgba(255,255,255,.12)); border-radius: 12px; padding: 3px 4px 3px 10px; }
