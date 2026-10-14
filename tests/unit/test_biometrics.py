@@ -179,6 +179,7 @@ async def test_ws_biometrics_call_uses_executor_wrapped_callable(load, fake_hass
     ws_api.async_register_command = lambda *a, **k: None
     ws_api.websocket_command = lambda *a, **k: (lambda func: func)
     ws_api.async_response = lambda func: func
+    ws_api.require_admin = lambda func: func
     sys.modules["homeassistant.components.websocket_api"] = ws_api
     components.websocket_api = ws_api
     sys.modules.pop("jc.websocket", None)

@@ -17,6 +17,7 @@ def _load_websocket_module():
     ws_api = types.ModuleType("homeassistant.components.websocket_api")
     ws_api.websocket_command = lambda schema: (lambda func: func)
     ws_api.async_response = lambda func: func
+    ws_api.require_admin = lambda func: func
     ws_api.async_register_command = lambda hass, func: None
     sys.modules["homeassistant.components.websocket_api"] = ws_api
     import homeassistant.components as ha_components
@@ -1838,9 +1839,13 @@ async def test_ws_list_models_returns_models_and_provider_errors(fake_hass, monk
     })
     monkeypatch.setattr(websocket, "_fetch_models", lambda *args: _raise_async("offline"))
     await websocket.ws_list_models(fake_hass, connection, {"id": 122, "provider": "openai"})
-    assert connection.result == (122, {
-        "provider": "openai", "models": [], "error": "offline",
-    })
+    _mid, _payload = connection.result
+    assert _mid == 122
+    assert _payload["provider"] == "openai"
+    assert _payload["models"] == []
+    # A generic message is returned; the raw exception is not reflected
+    # (info-exposure hardening, GHSA-fx76-fcmp-phmq).
+    assert _payload["error"] and "offline" not in _payload["error"]
 
 
 async def _raise_async(message):
@@ -2210,8 +2215,12 @@ async def test_more_endpoint_alternatives_and_http_errors(fake_hass, monkeypatch
         "async_get_clientsession", lambda hass: _Session(),
     )
     monkeypatch.setitem(sys.modules, "async_timeout", types.SimpleNamespace(timeout=lambda seconds: _Timeout()))
-    with pytest.raises(RuntimeError, match="HTTP 502: bad gateway"):
+    # The status code surfaces, but the upstream response body must NOT be
+    # reflected back (info-exposure hardening, GHSA-fx76-fcmp-phmq).
+    with pytest.raises(RuntimeError) as _ei:
         await websocket._fetch_models(fake_hass, "openai", "", "")
+    assert "502" in str(_ei.value)
+    assert "bad gateway" not in str(_ei.value)
 
     analyzer = types.SimpleNamespace(dismiss_suggestion=lambda sid: True)
     _install_jc_module(monkeypatch, "pattern_analyzer", types.SimpleNamespace(
@@ -2384,3 +2393,61 @@ def test_missing_state_and_recent_motion_helper_branches(fake_hass, monkeypatch)
     assert websocket._area_temp_humidity_entities(fake_hass, "living") == (
         "sensor.temperature", "sensor.humidity",
     )
+
+
+# ── GHSA-fx76-fcmp-phmq: jarvis/list_models SSRF + missing-authorization ────────
+
+def test_list_models_is_admin_gated_in_source():
+    """The command must carry @websocket_api.require_admin — without it any
+    authenticated non-admin user can reach the SSRF-capable handler (CWE-862)."""
+    comp = pathlib.Path(__file__).resolve().parents[2] / "custom_components" / "jarvis"
+    src = (comp / "websocket.py").read_text(encoding="utf-8")
+    idx = src.index('"jarvis/list_models"')
+    assert "require_admin" in src[idx - 200:idx], \
+        "jarvis/list_models must be gated with @websocket_api.require_admin"
+
+
+def test_fetch_models_rejects_non_http_schemes():
+    """SSRF hardening: only http(s) endpoints may be fetched. LAN/loopback hosts
+    stay allowed (local Ollama is the primary setup); the scheme is the guard."""
+    websocket = _load_websocket_module()
+    for ok in ("http://localhost:11434/api/tags",
+               "https://api.openai.com/v1/models",
+               "http://192.168.1.50:11434/v1/models",
+               "http://127.0.0.1:11434/v1/models"):
+        assert websocket._validate_fetch_url(ok) == ok
+    for bad in ("file:///etc/passwd", "gopher://x/_", "ftp://h/f",
+                "", "   ", "169.254.169.254/latest/meta-data"):
+        with pytest.raises(ValueError):
+            websocket._validate_fetch_url(bad)
+
+
+async def test_list_models_error_is_generic_not_reflected(fake_hass, monkeypatch):
+    """A failure must not reflect the upstream body / exception text back to the
+    caller (information-exposure half of GHSA-fx76-fcmp-phmq)."""
+    websocket = _load_websocket_module()
+    ha_secrets = importlib.import_module("jc.ha_secrets")
+
+    monkeypatch.setattr(websocket, "_get_entry", lambda hass: object())
+    monkeypatch.setattr(
+        websocket, "_runtime_opt", lambda hass, entry, key, default=None: default)
+
+    async def _no_key(hass, provider):
+        return ""
+    monkeypatch.setattr(ha_secrets, "async_get_provider_key", _no_key)
+
+    async def _boom(hass, provider, api_key, base_url):
+        raise RuntimeError("SECRET-INTERNAL-RESPONSE-BODY 169.254.169.254")
+    monkeypatch.setattr(websocket, "_fetch_models", _boom)
+
+    conn = _Conn()
+    await websocket.ws_list_models(
+        fake_hass, conn,
+        {"id": 7, "type": "jarvis/list_models", "provider": "custom",
+         "base_url": "http://169.254.169.254/latest/meta-data"})
+
+    assert conn.result is not None
+    _mid, payload = conn.result
+    assert payload["models"] == []
+    assert "SECRET-INTERNAL-RESPONSE-BODY" not in payload["error"]
+    assert "169.254.169.254" not in payload["error"]
