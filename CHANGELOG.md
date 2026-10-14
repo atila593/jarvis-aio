@@ -1,3 +1,41 @@
+## [9.20.0] — Tell household residents from guests (issue #388)
+
+JARVIS already lets you flag the people who live here as **residents** (Faces
+panel). Now it draws the full distinction a recognized face can have —
+**resident**, **guest** or **unknown** — and, crucially, surfaces it to your
+Home Assistant automations so they can treat a household member differently
+from a visitor.
+
+**What's new:**
+- A recognized person who isn't a flagged resident is now explicitly a
+  **guest** (a friend, relative or other visitor the backend knows by name), as
+  opposed to an **unknown** (unidentified) face. No re-enrollment and no new
+  list to manage: residency is still toggled in the Faces panel, and everyone
+  recognized who isn't a resident is a guest.
+- The **`jarvis_face_recognized` event** now carries two new fields for
+  automations and blueprints:
+  - `relationship` — `"resident"` / `"guest"` / `"unknown"`
+  - `is_resident` — boolean
+  So a template condition like
+  `{{ trigger.event.data.relationship == 'guest' }}` lets you run different
+  actions for guests vs. household members.
+- The **Faces panel** now badges recognized non-residents as **GUEST** (the
+  "Recently Seen" section), alongside the existing RESIDENT and UNKNOWN badges.
+
+**Unchanged — by design:** this is a *label*, not a behaviour change. Guests get
+exactly the same treatment from JARVIS's own security as before — only
+**residents** stand intrusion monitoring down; a guest never does, and nothing
+about the new classification relaxes any safety gate. The power is in the
+automations *you* write off the event.
+
+**Under the hood:**
+- `face_roster.relationship()` / `is_guest()` are the single source of truth for
+  the resident/guest/unknown split; `recognition.recent_faces()` rows now carry
+  `relationship` too.
+- The resident roster is warm-loaded off the event loop at setup, so the first
+  recognition's event payload never does a blocking read on the loop
+  (consistent with the 9.17.0 loop-safety fix).
+
 ## [9.19.0] — Every config-flow setting is now in the main panel (incl. quiet hours)
 
 The integration's **Configure** flow (Settings → Devices & Services → JARVIS)

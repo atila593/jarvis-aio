@@ -61,3 +61,34 @@ def test_tolerates_legacy_dict_file(fr):
     fr._roster = {}
     assert fr.is_resident("Sam Smith") is True
     assert fr.residents() == ["Sam Smith"]
+
+
+# ── resident / guest / unknown classification (issue #388) ──────────────────────
+
+def test_relationship_resident_guest_unknown(fr):
+    fr.add_resident("Sam")
+    # A flagged resident.
+    assert fr.relationship("Sam") == "resident"
+    assert fr.relationship("  sam ") == "resident"      # normalized match
+    # A recognized but unlisted person is a guest.
+    assert fr.relationship("Quentin") == "guest"
+    # Backend "no identity" markers are strangers, not guests.
+    for n in ("Unknown", "unknown person", "unknown_face", "", "   "):
+        assert fr.relationship(n) == "unknown", n
+
+
+def test_is_guest(fr):
+    fr.add_resident("Sam")
+    assert fr.is_guest("Quentin") is True               # recognized, not a resident
+    assert fr.is_guest("sam") is False                  # a resident is not a guest
+    assert fr.is_guest("Unknown") is False              # a stranger is not a guest
+    assert fr.is_guest("") is False
+
+
+def test_relationship_flips_when_residency_toggled(fr):
+    # The whole point of #388: managing status without touching face recognition.
+    assert fr.relationship("Quentin") == "guest"
+    fr.add_resident("Quentin")
+    assert fr.relationship("Quentin") == "resident"
+    fr.remove_resident("Quentin")
+    assert fr.relationship("Quentin") == "guest"        # back to a guest, still recognized

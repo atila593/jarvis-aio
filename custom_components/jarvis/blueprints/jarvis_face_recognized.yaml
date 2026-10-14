@@ -4,6 +4,12 @@ blueprint:
     When DoubleTake recognizes a face on a camera, JARVIS announces who it is
     (or "an unknown person") and optionally analyzes what they're doing.
     Fires on the `jarvis_face_recognized` event.
+
+    The event carries `trigger.event.data.relationship` — `resident` (a flagged
+    household member), `guest` (a recognized person who isn't a resident) or
+    `unknown` — plus the boolean `is_resident`, so your own automations can
+    treat household and visitors differently (issue #388). Flag residents in the
+    JARVIS panel → Faces.
   domain: automation
   input:
     target_camera:

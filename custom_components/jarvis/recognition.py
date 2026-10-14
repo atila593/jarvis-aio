@@ -721,6 +721,23 @@ def _is_unknown(name: str) -> bool:
     return (name or "").strip().lower() in ("unknown", "unknown person", "unknown_face")
 
 
+def _relationship_fields(name: str, is_unknown: bool) -> dict:
+    """``is_resident`` + ``relationship`` for the ``jarvis_face_recognized``
+    event payload, so automations and blueprints can branch on household member
+    vs. guest vs. stranger (issue #388). ``relationship`` is one of
+    ``"resident"`` / ``"guest"`` / ``"unknown"``. Best-effort — any roster error
+    degrades to a non-resident (guest/unknown), never raising into the handler."""
+    try:
+        from . import face_roster
+        resident = bool((not is_unknown) and face_roster.is_resident(name))
+    except Exception:
+        resident = False
+    return {
+        "is_resident": resident,
+        "relationship": "unknown" if is_unknown else ("resident" if resident else "guest"),
+    }
+
+
 def recent_faces(hass: HomeAssistant, limit: int = 20) -> list[dict]:
     """The most recent face recognition per camera, for the Household Faces panel
     (issue #140). Merges the MQTT-driven recognition cache with Frigate's
@@ -754,6 +771,7 @@ def recent_faces(hass: HomeAssistant, limit: int = 20) -> list[dict]:
                 return
         unknown = _is_unknown(name)
         snap = None if unknown else _FACE_SNAPSHOTS.get(_face_norm(name))
+        resident = bool(face_roster and not unknown and face_roster.is_resident(name))
         rows[key] = {
             "name": name,
             "camera_entity": cam_entity,
@@ -761,8 +779,11 @@ def recent_faces(hass: HomeAssistant, limit: int = 20) -> list[dict]:
             "confidence": round(float(conf or 0.0), 1),
             "age_seconds": int(age_seconds),
             "is_unknown": unknown,
-            "is_resident": bool(
-                face_roster and not unknown and face_roster.is_resident(name)),
+            "is_resident": resident,
+            # resident (lives here) / guest (recognized, not a resident) /
+            # unknown (unidentified) — the panel badges and automations use this
+            # single classification (issue #388).
+            "relationship": "unknown" if unknown else ("resident" if resident else "guest"),
             # Pinned recognition-time snapshot (Phase 2) — the frame from when
             # JARVIS last saw this person; None falls back to the live camera view.
             "snapshot_url": snap.get("url") if snap else None,
@@ -825,6 +846,7 @@ def recent_faces(hass: HomeAssistant, limit: int = 20) -> list[dict]:
                 "age_seconds": age,
                 "is_unknown": True,
                 "is_resident": False,
+                "relationship": "unknown",
                 "snapshot_url": rec.get("url"),
                 "is_low_confidence": False,
                 "source": "best_effort_unknown",
@@ -922,6 +944,14 @@ async def register_recognition_listener(hass: HomeAssistant) -> list:
     Returns list of unsub callables. Empty list if MQTT isn't configured.
     """
     unsubs = []
+    # Warm the resident roster off the event loop so the first recognition's
+    # event payload (issue #388: is_resident / relationship) never triggers a
+    # blocking roster file read on the loop (cf. the 9.17.0 loop-safety fix).
+    try:
+        from . import face_roster
+        await hass.async_add_executor_job(face_roster._load)
+    except Exception:
+        pass
     try:
         from homeassistant.components import mqtt
     except ImportError:
@@ -961,6 +991,7 @@ async def register_recognition_listener(hass: HomeAssistant) -> list:
                 "confidence":  confidence,
                 "is_unknown":  name.lower() == "unknown",
                 "is_confident": confidence >= CONFIDENCE_THRESHOLD,
+                **_relationship_fields(name, name.lower() == "unknown"),
             },
         )
         _LOGGER.info("JARVIS: face recognized — %s @ %s (%.1f%%)", name, camera, confidence)
@@ -1060,6 +1091,8 @@ async def register_recognition_listener(hass: HomeAssistant) -> list:
                             "confidence": sub_conf,
                             "is_unknown": sub_name.lower() in ("unknown", "unknown person"),
                             "is_confident": sub_conf >= CONFIDENCE_THRESHOLD,
+                            **_relationship_fields(
+                                sub_name, sub_name.lower() in ("unknown", "unknown person")),
                             "source": "frigate",
                         })
                         _LOGGER.info(
@@ -1106,6 +1139,7 @@ async def register_recognition_listener(hass: HomeAssistant) -> list:
                         "confidence": conf,
                         "is_unknown": is_unknown,
                         "is_confident": conf >= CONFIDENCE_THRESHOLD,
+                        **_relationship_fields(name, is_unknown),
                         "source": "frigate_tracked_object",
                     })
                     if not is_unknown:

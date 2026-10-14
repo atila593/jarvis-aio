@@ -1718,7 +1718,7 @@ class JarvisPanel extends HTMLElement {
       { label: "Chat", tab: "chat", kw: "chat message talk type text assistant ask conversation" },
       { label: "Residence", tab: "residence", kw: "rooms areas floor plan" },
       { label: "Intrusion", tab: "intrusion", kw: "security alarm breach lockdown" },
-      { label: "Faces", tab: "faces", kw: "face recognition household residents" },
+      { label: "Faces", tab: "faces", kw: "face recognition household residents guests visitors" },
       { label: "Suggestions", tab: "suggestions", kw: "ideas recommendations" },
       { label: "Settings", tab: "settings", kw: "configuration options preferences" },
       { label: "Logs", tab: "logs", kw: "debug history events" },
@@ -4722,7 +4722,7 @@ dotLabel.textContent = lightBtn.classList.contains("adl")
         <span>Faces</span>
         <span class="side" id="faces-count">◉ WHITELIST</span>
       </div>
-      <div class="mem-sub">Faces JARVIS recognizes from your vision backend — Frigate face recognition, or middleware like Double Take paired with external detectors such as CompreFace or DeepStack. JARVIS runs no face engine of its own; flag the people who live here as residents so it can tell a known face from an unknown one and stand intrusion monitoring down when the person it sees is a resident.</div>
+      <div class="mem-sub">Faces JARVIS recognizes from your vision backend — Frigate face recognition, or middleware like Double Take paired with external detectors such as CompreFace or DeepStack. JARVIS runs no face engine of its own; flag the people who live here as residents so it can tell a household member from a guest or an unknown face, and stand intrusion monitoring down when the person it sees is a resident. A recognized face that isn't a resident is a <b>guest</b> — the <code>jarvis_face_recognized</code> event carries that status (<code>relationship</code>: resident / guest / unknown) so your automations can treat household and visitors differently.</div>
       <div class="faces-add-row">
         <input class="cfg-field" id="faces-add-name" type="text" placeholder="Add a resident by name"/>
         <button class="btn primary" id="faces-add-btn">+ Add resident</button>
@@ -8305,10 +8305,13 @@ ${this._renderExcludedEntities(d)}
     }
     html += `</div>`;
 
-    // ── Section 2: Recently seen (non-residents: known-but-unlisted + unknown) ──
+    // ── Section 2: Recently seen (non-residents: guests + unknown) ──
+    // A recognized face that isn't a resident is a GUEST (issue #388); an
+    // unidentified face is UNKNOWN. Promoting a guest to resident = "+ Resident";
+    // removing a resident (Section 1) drops them back to a guest.
     const others = recent.filter(r => !r.is_resident);
     html += `<div class="faces-section">
-      <div class="faces-section-head"><span>Recently Seen</span><span class="faces-section-sub">not in the household</span></div>`;
+      <div class="faces-section-head"><span>Recently Seen</span><span class="faces-section-sub">guests &amp; unknown faces</span></div>`;
     if (others.length) {
       html += `<div class="faces-gallery">` + others.map(r => this._faceCard({
         name: r.name,
@@ -8317,14 +8320,14 @@ ${this._renderExcludedEntities(d)}
         confidence: r.confidence,
         age_seconds: r.age_seconds,
         snapshot_url: r.snapshot_url,
-        relation: r.is_unknown ? "unknown" : "known",
+        relation: r.relationship || (r.is_unknown ? "unknown" : "guest"),
         low_conf: !!r.is_low_confidence,
         actions: r.is_unknown ? [] : [{ label: "+ Resident", kind: "add", name: r.name }],
         // Assign this sighting's frame to a household resident's reference (#140).
         assignTargets: residents,
       })).join("") + `</div>`;
     } else {
-      html += `<div class="mmwave-empty">No non-resident faces seen recently. When your backend names a face that isn't a resident, it appears here.</div>`;
+      html += `<div class="mmwave-empty">No guests or unknown faces seen recently. When your backend names a face that isn't a resident, it appears here as a guest.</div>`;
     }
     html += `</div>`;
 
@@ -8465,7 +8468,8 @@ ${this._renderExcludedEntities(d)}
     const safe = this._esc(name || "Unknown");
     const initial = this._esc((name || "?").trim().charAt(0).toUpperCase() || "?");
     let badge = relation === "resident" ? `<span class="faces-badge resident">RESIDENT</span>`
-      : relation === "unknown" ? `<span class="faces-badge unknown">UNKNOWN</span>` : "";
+      : relation === "unknown" ? `<span class="faces-badge unknown">UNKNOWN</span>`
+      : relation === "guest" ? `<span class="faces-badge guest">GUEST</span>` : "";
     // A best-effort LLM guess is flagged distinctly and never looks authoritative.
     if (low_conf) badge = `<span class="faces-badge guess">LLM GUESS</span>`;
     // Prefer the pinned recognition-time snapshot; else lazily pull a live frame
@@ -11314,6 +11318,7 @@ ${this._renderExcludedEntities(d)}
   .faces-mark { font-size: 10px; padding: 3px 8px; }
   .faces-badge { position: absolute; top: 6px; left: 6px; font-size: 8px; letter-spacing: .06em; padding: 1px 5px; border-radius: 7px; font-family: var(--font-mono); }
   .faces-badge.resident { background: rgba(80,200,120,.85); color: #04210f; }
+  .faces-badge.guest { background: rgba(90,170,235,.88); color: #04172b; }
   .faces-badge.unknown { background: rgba(230,180,60,.85); color: #241a02; }
   .faces-badge.guess { background: rgba(170,120,230,.9); color: #160a26; }
   .faces-src { font-size: 10px; color: var(--text-dim); margin-top: 16px; font-family: var(--font-mono); }

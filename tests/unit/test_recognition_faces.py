@@ -73,6 +73,49 @@ def test_recent_faces_non_resident_known_face_not_flagged(recog, fake_hass):
     assert rows[0]["is_unknown"] is False
 
 
+def test_recent_faces_relationship_resident_guest_unknown(recog, fake_hass):
+    # #388: each row carries the resident / guest / unknown classification the
+    # panel badges and that mirrors what the event payload exposes.
+    mod, fr = recog
+    fr.add_resident("Sam")
+    _cache(mod, "camera.front_door", "Sam", 92.0, age_seconds=10)       # resident
+    _cache(mod, "camera.porch", "Quentin", 88.0, age_seconds=20)        # guest
+    _cache(mod, "camera.driveway", "Unknown", 0.0, age_seconds=30)      # unknown
+
+    by_name = {r["name"]: r for r in mod.recent_faces(fake_hass)}
+    assert by_name["Sam"]["relationship"] == "resident"
+    assert by_name["Quentin"]["relationship"] == "guest"
+    assert by_name["Unknown"]["relationship"] == "unknown"
+
+
+def test_recent_faces_best_effort_unknown_relationship(recog, fake_hass):
+    mod, _ = recog
+    mod.remember_unknown_face("camera.hall", url="/x.jpg")
+    row = mod.recent_faces(fake_hass)[0]
+    assert row["is_unknown"] is True
+    assert row["relationship"] == "unknown"
+
+
+# ── jarvis_face_recognized event payload classification (issue #388) ────────────
+
+def test_relationship_fields_for_event_payload(recog):
+    mod, fr = recog
+    fr.add_resident("Sam")
+    # A flagged resident.
+    res = mod._relationship_fields("Sam", is_unknown=False)
+    assert res == {"is_resident": True, "relationship": "resident"}
+    # A recognized non-resident is a guest.
+    guest = mod._relationship_fields("Quentin", is_unknown=False)
+    assert guest == {"is_resident": False, "relationship": "guest"}
+    # An unknown face is never a resident or guest.
+    unk = mod._relationship_fields("Unknown", is_unknown=True)
+    assert unk == {"is_resident": False, "relationship": "unknown"}
+    # A name that happens to match a resident but came in flagged unknown must
+    # NOT be reported as a resident — the is_unknown flag wins (fail-safe).
+    assert mod._relationship_fields("Sam", is_unknown=True) == {
+        "is_resident": False, "relationship": "unknown"}
+
+
 def test_recent_faces_sorted_newest_first_and_limited(recog, fake_hass):
     mod, _ = recog
     _cache(mod, "camera.a", "Old", 70.0, age_seconds=600)
