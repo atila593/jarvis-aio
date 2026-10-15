@@ -84,6 +84,7 @@ def async_register(hass: HomeAssistant) -> None:
         websocket_api.async_register_command(hass, ws_voice_confirm_test)
         websocket_api.async_register_command(hass, ws_intrusion)
         websocket_api.async_register_command(hass, ws_faces)
+        websocket_api.async_register_command(hass, ws_face_reference)
         websocket_api.async_register_command(hass, ws_mutes)
         websocket_api.async_register_command(hass, ws_mode)
         websocket_api.async_register_command(hass, ws_energy)
@@ -3087,6 +3088,54 @@ async def ws_faces(
     except Exception as exc:
         _LOGGER.exception("ws_faces failed: %s", exc)
         connection.send_error(msg["id"], "faces_failed", str(exc))
+
+
+def _read_reference_data_url(name: str) -> Optional[str]:
+    """Read a resident's enrolled reference photo and return it as a
+    ``data:image/jpeg;base64,…`` URL, or None if there is no reference. Does
+    file I/O — call on the executor. Never raises.
+
+    Reference photos live privately under ``<config>/jarvis/faces_ref`` (NOT in
+    ``www``, so they are never exposed at an unauthenticated ``/local`` URL).
+    Serving the bytes inline over this authenticated websocket is how the panel
+    displays the photo the user uploaded without weakening that privacy (#394)."""
+    try:
+        from . import recognition
+        path = recognition.face_reference_path(name)
+        if not path:
+            return None
+        with open(path, "rb") as f:
+            raw = f.read()
+        if not raw:
+            return None
+        import base64
+        return "data:image/jpeg;base64," + base64.b64encode(raw).decode("ascii")
+    except Exception as exc:  # pragma: no cover - defensive
+        _LOGGER.debug("read reference failed for %s: %s", name, exc)
+        return None
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "jarvis/face_reference",
+    vol.Required("name"): str,
+})
+@websocket_api.async_response
+async def ws_face_reference(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict,
+) -> None:
+    """Return one resident's enrolled reference photo as an inline data URL so
+    the Faces panel can show the snapshot the user uploaded (#394). A read, so
+    it is not admin-gated — the whole Faces panel sits behind Home Assistant
+    auth, and this only ever returns a photo the user themselves enrolled."""
+    try:
+        data_url = await hass.async_add_executor_job(
+            _read_reference_data_url, msg["name"])
+        connection.send_result(msg["id"], {"image": data_url})
+    except Exception as exc:
+        _LOGGER.exception("ws_face_reference failed: %s", exc)
+        connection.send_error(msg["id"], "face_reference_failed", str(exc))
 
 
 @websocket_api.websocket_command({

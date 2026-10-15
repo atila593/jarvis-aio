@@ -8349,6 +8349,10 @@ ${this._renderExcludedEntities(d)}
     // Fill each card's snapshot from the camera that saw the subject.
     body.querySelectorAll("img[data-faces-cam]").forEach(img =>
       this._loadFaceSnap(img.getAttribute("data-faces-cam"), img));
+    // …and show the enrolled reference photo on residents with no live sighting
+    // (#394: the uploaded snapshot must actually appear on the card).
+    body.querySelectorAll("img[data-faces-refimg]").forEach(img =>
+      this._loadFaceReference(img.getAttribute("data-faces-refimg"), img));
     // Reference-photo upload (Phase 3): a resident card's file input enrolls a
     // reference image the best-effort LLM matcher compares camera frames against.
     body.querySelectorAll("input[type=file][data-faces-ref]").forEach(inp =>
@@ -8381,6 +8385,10 @@ ${this._renderExcludedEntities(d)}
         const card = el.closest(".faces-card");
         if (card) this._labelFaceAs(card, el.getAttribute("data-faces-capture"));
       }));
+    // Remember the chosen snapshot camera per-browser so it persists across the
+    // panel's re-renders / reopen instead of resetting each time (#394).
+    body.querySelectorAll("select.faces-snap-cam").forEach(sel =>
+      sel.addEventListener("change", () => this._setFacesSnapCam(sel.value)));
     // …or snapshot a fresh frame from a chosen camera right now (#140).
     body.querySelectorAll("button[data-faces-snapshot]").forEach(el =>
       el.addEventListener("click", () => {
@@ -8407,6 +8415,7 @@ ${this._renderExcludedEntities(d)}
         fr.readAsDataURL(file);
       });
       await this._hass.callWS({ type: "jarvis/faces", action: "set_reference", name, image: b64 });
+      if (this._faceRefs) delete this._faceRefs[name];   // show the new photo, not a cached one
       this._toast(`✓ reference photo set for ${name}`, "ok");
       await this._fetchFaces();
     } catch (err) {
@@ -8454,6 +8463,7 @@ ${this._renderExcludedEntities(d)}
       const image = await this._captureFaceImage(cardEl);
       if (!image) { this._toast("✗ no snapshot available to assign", "err"); return; }
       await this._hass.callWS({ type: "jarvis/faces", action: "set_reference", name, image });
+      if (this._faceRefs) delete this._faceRefs[name];
       this._toast(`✓ reference photo set for ${name} from this sighting`, "ok");
       await this._fetchFaces();
     } catch (err) {
@@ -8474,6 +8484,7 @@ ${this._renderExcludedEntities(d)}
       if (!res?.image) { this._toast("✗ no frame from that camera", "err"); return; }
       const image = `data:image/jpeg;base64,${res.image}`;
       await this._hass.callWS({ type: "jarvis/faces", action: "set_reference", name, image });
+      if (this._faceRefs) delete this._faceRefs[name];
       this._toast(`✓ reference photo set for ${name} from ${String(cameraEntity).replace(/^camera\./, "")}`, "ok");
       await this._fetchFaces();
     } catch (err) {
@@ -8524,11 +8535,16 @@ ${this._renderExcludedEntities(d)}
     if (low_conf) badge = `<span class="faces-badge guess">LLM GUESS</span>`;
     // Prefer the pinned recognition-time snapshot; else lazily pull a live frame
     // from the camera that saw them; else an initial-letter avatar.
+    // Thumbnail priority: a pinned recognition-time sighting → the enrolled
+    // reference photo the user uploaded (#394: it must actually show up) → a
+    // live frame from the camera that saw them → an initial-letter avatar.
     const thumb = snapshot_url
       ? `<img class="faces-thumb-img" src="${this._esc(snapshot_url)}" alt="${safe}"/>`
-      : camera_entity
-        ? `<img class="faces-thumb-img" data-faces-cam="${this._esc(camera_entity)}" alt="${safe}" style="display:none"/><div class="faces-thumb-ph">${initial}</div>`
-        : `<div class="faces-thumb-ph">${initial}</div>`;
+      : (has_ref && ref_name)
+        ? `<img class="faces-thumb-img" data-faces-refimg="${this._esc(ref_name)}" alt="${safe}" style="display:none"/><div class="faces-thumb-ph">${initial}</div>`
+        : camera_entity
+          ? `<img class="faces-thumb-img" data-faces-cam="${this._esc(camera_entity)}" alt="${safe}" style="display:none"/><div class="faces-thumb-ph">${initial}</div>`
+          : `<div class="faces-thumb-ph">${initial}</div>`;
     const meta = [];
     if (camera) meta.push(this._esc(String(camera).replace(/_/g, " ")));
     if (relation !== "unknown" && !low_conf && confidence) meta.push(`${Math.round(confidence)}%`);
@@ -8556,7 +8572,9 @@ ${this._renderExcludedEntities(d)}
     // file upload. Only offered when at least one camera entity exists.
     let snapCtl = "";
     if (ref_name) {
-      const camOpts = this._cameraEntityOptions("");
+      // Preselect the camera the user last chose here, so the choice survives a
+      // panel re-render / reopen instead of resetting every time (#394).
+      const camOpts = this._cameraEntityOptions(this._facesSnapCam());
       if (camOpts.includes('value="camera.')) {
         snapCtl = `<div class="faces-card-snap">`
           + `<select class="faces-assign-sel faces-snap-cam" aria-label="Camera to snapshot ${safe} from">${camOpts}</select>`
@@ -8590,6 +8608,49 @@ ${this._renderExcludedEntities(d)}
   // Lazily fetch a camera frame for a face card, caching per camera so multiple
   // cards sharing a camera don't each hit the backend. Leaves the initial
   // placeholder in place when no frame is available.
+  // The camera last chosen in a Faces "Snapshot now" dropdown, remembered
+  // per-browser so it survives the panel's periodic re-render and reopen (#394).
+  _facesSnapCam() {
+    try { return window.localStorage.getItem("jarvis_faces_snap_cam") || ""; }
+    catch (_) { return ""; }
+  }
+
+  _setFacesSnapCam(entity) {
+    try {
+      if (entity) window.localStorage.setItem("jarvis_faces_snap_cam", entity);
+    } catch (_) { /* per-browser convenience; safe to ignore */ }
+  }
+
+  // Lazily pull an enrolled reference photo (served inline over the
+  // authenticated websocket — it is NOT a public /local URL) and show it as the
+  // card thumbnail. Cached per name for the panel's lifetime (#394).
+  async _loadFaceReference(name, img) {
+    if (!name || !img || !this._hass) return;
+    this._faceRefs = this._faceRefs || {};
+    const key = String(name);
+    const cached = this._faceRefs[key];
+    const show = (dataUrl) => {
+      if (!dataUrl || !img.isConnected) return;
+      img.src = dataUrl;
+      img.style.display = "";
+      const ph = img.parentElement?.querySelector(".faces-thumb-ph");
+      if (ph) ph.style.display = "none";
+    };
+    if (cached === null) return;            // known-empty, don't refetch
+    if (typeof cached === "string") { show(cached); return; }
+    try {
+      const res = await this._hass.callWS({ type: "jarvis/face_reference", name: key });
+      if (res?.image) {
+        this._faceRefs[key] = res.image;
+        show(res.image);
+      } else {
+        this._faceRefs[key] = null;
+      }
+    } catch (_) {
+      this._faceRefs[key] = null;            // leave the placeholder
+    }
+  }
+
   async _loadFaceSnap(cameraEntity, img) {
     if (!cameraEntity || !img || !this._hass) return;
     this._faceSnaps = this._faceSnaps || {};

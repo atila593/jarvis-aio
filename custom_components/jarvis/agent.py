@@ -200,7 +200,7 @@ JARVIS_TOOLS = [
                 "properties": {
                     "domain": {
                         "type": "string",
-                        "enum": ["light", "switch", "fan", "lock", "cover"],
+                        "enum": ["light", "switch", "input_boolean", "fan", "lock", "cover"],
                         "description": "Device domain to control",
                     },
                     "action": {
@@ -1354,9 +1354,14 @@ async def _exec_search_entities(hass: HomeAssistant, args: dict) -> str:
                 }])
 
     domains = [domain_filter] if domain_filter else [
-        "light", "switch", "lock", "cover", "climate", "fan",
+        "light", "switch", "input_boolean", "lock", "cover", "climate", "fan",
         "media_player", "sensor", "binary_sensor", "scene",
         "script", "automation", "person",
+        # Helper + other actuatable domains JARVIS can still turn on/off/toggle
+        # via control_device — surfaced here so the model can resolve them by
+        # name instead of giving up (issue #395).
+        "input_button", "input_number", "input_select",
+        "humidifier", "vacuum", "valve", "siren", "water_heater", "button",
     ]
 
     # Fuzzy bigram scorer (inline — no external deps)
@@ -3026,7 +3031,8 @@ def _build_home_context(hass: HomeAssistant, learned: dict | None = None) -> str
 
     # Key entity counts by domain
     for domain, label in [
-        ("light", "Lights"), ("switch", "Switches"), ("lock", "Locks"),
+        ("light", "Lights"), ("switch", "Switches"),
+        ("input_boolean", "Helper toggles"), ("lock", "Locks"),
         ("cover", "Covers"), ("climate", "Thermostats"), ("fan", "Fans"),
         ("media_player", "Media players"), ("person", "People"),
         ("scene", "Scenes"), ("script", "Scripts"),
