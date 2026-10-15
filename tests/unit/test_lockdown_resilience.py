@@ -183,16 +183,70 @@ async def _engage(cc, hass):
 
 
 async def test_new_open_controllable_cover_is_closed(cognitive_core, fake_hass):
+    # A non-garage closeable cover (e.g. a powered door) that opens mid-lockdown
+    # is still re-secured — only garages/gates are left alone (see below).
+    mgr = await _engage(cognitive_core, fake_hass)
+    fake_hass.service_calls.clear()
+    old = FakeState("cover.patio_door", "closed", {"device_class": "door"})
+    new = FakeState("cover.patio_door", "open", {"device_class": "door"})
+    fake_hass.states.set("cover.patio_door", "open", device_class="door")
+    action = await mgr.handle_state_change("cover.patio_door", old, new)
+    fake_hass.close_pending()  # discard the delayed verify task
+    assert ("cover", "close_cover", {"entity_id": "cover.patio_door"}) in fake_hass.service_calls
+    assert action is None
+    assert "cover.patio_door" in mgr._secured_by_us
+
+
+async def test_garage_opened_midlockdown_is_not_force_closed(cognitive_core, fake_hass):
+    # BUGFIX (9.21.2): a garage/gate that OPENS during lockdown is a resident
+    # arriving — never force it closed (safety hazard + it was blocking arrival
+    # opens). Alert once, exempt it, and leave the door alone.
     mgr = await _engage(cognitive_core, fake_hass)
     fake_hass.service_calls.clear()
     old = FakeState("cover.garage_door", "closed", {"device_class": "garage"})
     new = FakeState("cover.garage_door", "open", {"device_class": "garage"})
     fake_hass.states.set("cover.garage_door", "open", device_class="garage")
     action = await mgr.handle_state_change("cover.garage_door", old, new)
-    fake_hass.close_pending()  # discard the delayed verify task
-    assert ("cover", "close_cover", {"entity_id": "cover.garage_door"}) in fake_hass.service_calls
+    fake_hass.close_pending()
+    assert not [c for c in fake_hass.service_calls if c[0] == "cover" and c[1] == "close_cover"]
+    assert "cover.garage_door" not in mgr._secured_by_us
+    assert "cover.garage_door" in mgr.exempt_windows
+    assert action is not None and action["type"] == "lockdown_breach"
+    # a second event on the same door does not re-alert (dedup) or fight it
+    action2 = await mgr.handle_state_change("cover.garage_door", old, new)
+    assert action2 is None
+
+
+async def test_indeterminate_cover_is_not_treated_as_a_breach(cognitive_core, fake_hass):
+    # BUGFIX (9.21.2): a closed garage dropping to `unavailable` (cloud opener
+    # losing its link) must NOT be read as "open" and "secured" — that was the
+    # source of the "I tried to secure … but it's still open" spam on doors
+    # that were in fact already secure.
+    mgr = await _engage(cognitive_core, fake_hass)
+    fake_hass.service_calls.clear()
+    old = FakeState("cover.garage_door", "closed", {"device_class": "garage"})
+    new = FakeState("cover.garage_door", "unavailable", {"device_class": "garage"})
+    action = await mgr.handle_state_change("cover.garage_door", old, new)
+    fake_hass.close_pending()
+    assert fake_hass.service_calls == []       # never actuated
+    assert action is None                       # never alerted
+    assert "cover.garage_door" not in mgr._secured_by_us
+
+
+async def test_cover_without_close_support_is_not_nagged(cognitive_core, fake_hass):
+    # BUGFIX (9.21.2): a cover that reports features but no CLOSE service can't
+    # actually be closed — don't try (a no-op close) and don't nag; adopt it.
+    mgr = await _engage(cognitive_core, fake_hass)
+    fake_hass.service_calls.clear()
+    # supported_features=1 → OPEN only, no CLOSE (bit 2). Use a non-garage class
+    # so the no-reactive-close garage rule isn't what's being exercised here.
+    old = FakeState("cover.odd", "closed", {"device_class": "door", "supported_features": 1})
+    new = FakeState("cover.odd", "open", {"device_class": "door", "supported_features": 1})
+    action = await mgr.handle_state_change("cover.odd", old, new)
+    fake_hass.close_pending()
+    assert fake_hass.service_calls == []
     assert action is None
-    assert "cover.garage_door" in mgr._secured_by_us
+    assert "cover.odd" in mgr.exempt_windows
 
 
 async def test_new_open_contact_sensor_is_assumed_intentional(cognitive_core, fake_hass):

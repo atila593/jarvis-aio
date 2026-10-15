@@ -1649,6 +1649,20 @@ class LockdownManager:
     # ── opening / secure-state model (doors + windows + locks) ──────────────
     _DOOR_WINDOW_BS = ("door", "window", "garage_door", "opening")
     _CLOSEABLE_COVERS = {"door", "garage", "garage_door", "window", "gate"}
+    # Motorized covers JARVIS must NEVER force closed in *reaction* to someone
+    # opening them while lockdown is active: a garage/gate coming down on a
+    # vehicle or a person is a physical-safety hazard, and one that opens
+    # mid-lockdown is overwhelmingly a resident (or their arrival automation),
+    # not an intruder. We alert once and leave it — the security signal is
+    # preserved, the door is not fought. (Closing a *genuinely* open one at
+    # engage, when the house is being armed empty, is still done.)
+    _NO_REACTIVE_CLOSE = {"garage", "garage_door", "gate"}
+    # States that mean "offline / not reported yet": we can neither trust them
+    # as open nor act on them. Cloud garage/lock integrations drop here
+    # routinely — treating `unavailable` as "open" made JARVIS try to "secure"
+    # an already-closed door and then nag that it "couldn't."
+    _INDETERMINATE = ("unavailable", "unknown", "none", "")
+    _COVER_FEATURE_CLOSE = 2   # homeassistant CoverEntityFeature.CLOSE bit
 
     def _open_openings(self) -> set:
         """Every door/window currently open right now (sensors + covers)."""
@@ -1670,6 +1684,13 @@ class LockdownManager:
             return dc in self._DOOR_WINDOW_BS
         return False
 
+    def _is_indeterminate(self, state) -> bool:
+        """A state we can't act on: the device is offline or hasn't reported.
+        Cloud garage/lock integrations drop to `unavailable`/`unknown` all the
+        time; that is neither "open" nor "secure" — so it must never be treated
+        as a breach and never actuated against."""
+        return str(state).strip().lower() in self._INDETERMINATE
+
     def _is_secure(self, dom: str, state) -> bool:
         s = str(state).lower()
         if dom == "lock":
@@ -1680,12 +1701,25 @@ class LockdownManager:
             return s in ("off", "closed", "false")     # off ⇒ closed/secure
         return True
 
-    def _can_secure(self, dom: str, dc) -> bool:
-        """Can JARVIS actually close/lock this? A bare contact sensor cannot."""
+    def _can_secure(self, dom: str, dc, supported_features=None) -> bool:
+        """Can JARVIS actually close/lock this? A bare contact sensor cannot —
+        and neither can a cover that doesn't advertise a CLOSE service (a
+        status-only or one-way opener): trying anyway just yields a no-op close
+        and a false "still open" alert. We only rule a cover out when it
+        *reports* features and CLOSE is absent; a missing/None attribute means
+        "unknown," so we assume closeable and let the verify step catch a
+        genuine failure."""
         if dom == "lock":
             return True
         if dom == "cover":
-            return dc in self._CLOSEABLE_COVERS
+            if dc not in self._CLOSEABLE_COVERS:
+                return False
+            if supported_features is not None:
+                try:
+                    return bool(int(supported_features) & self._COVER_FEATURE_CLOSE)
+                except (TypeError, ValueError):
+                    return True
+            return True
         return False
 
     async def _secure_entity(self, eid: str, dom: str) -> bool:
@@ -1760,7 +1794,8 @@ class LockdownManager:
             dom = eid.split(".", 1)[0]
             st = self.hass.states.get(eid)
             dc = st.attributes.get("device_class") if st else None
-            if self._can_secure(dom, dc):
+            sf = st.attributes.get("supported_features") if st else None
+            if self._can_secure(dom, dc, sf):
                 name = self._friendly(eid)
                 if await self._secure_entity(eid, dom):
                     closed.append(name)
@@ -1836,15 +1871,23 @@ class LockdownManager:
         dc = new.attributes.get("device_class")
         if not self._is_relevant(dom, dc):
             return None
+        # Offline / not-yet-reported ⇒ we can't tell if it's open and must not
+        # act. A closed garage dropping to `unavailable` is NOT a breach; acting
+        # on it is what produced the "I tried to secure … but it's still open"
+        # spam on already-secure doors.
+        if self._is_indeterminate(new.state):
+            return None
         if self._is_secure(dom, new.state):
             return None
         if old is not None and not self._is_secure(dom, old.state):
             return None  # was already unsecure — not a fresh transition
         name = new.attributes.get("friendly_name", eid)
         honorific = self.config.get("honorific", "sir")
+        sf = new.attributes.get("supported_features")
 
-        if not self._can_secure(dom, dc):
-            # Nothing JARVIS can do about a contact sensor → assume intentional.
+        if not self._can_secure(dom, dc, sf):
+            # Nothing JARVIS can (or safely should) close — a bare contact
+            # sensor, or a cover with no CLOSE service → assume intentional.
             self.exempt_windows.add(eid)
             await self._persist()
             _LOGGER.info("Lockdown: %s opened (not controllable) — treating as intentional", eid)
@@ -1861,6 +1904,24 @@ class LockdownManager:
             return {
                 "type": "lockdown_breach", "urgency": "high", "auto_act": True,
                 "message": f"{honorific.title()}, {name} reopened after I secured it — I'll leave it open.",
+            }
+
+        if dom == "cover" and dc in self._NO_REACTIVE_CLOSE:
+            # A motorized garage/gate that OPENS during lockdown is almost
+            # always a resident or their arrival automation — and bringing one
+            # down on a vehicle or a person is a physical-safety hazard. Never
+            # fight it: note it, alert once, and leave it open. (This is what
+            # was blocking the user and their automation from opening the garage
+            # on arrival home.)
+            self.exempt_windows.add(eid)
+            await self._persist()
+            _LOGGER.info("Lockdown: %s opened — not force-closing a garage/gate (arrival/safety)", eid)
+            if eid in self._alerted:
+                return None
+            self._alerted.add(eid)
+            return {
+                "type": "lockdown_breach", "urgency": "high", "auto_act": True,
+                "message": f"{honorific.title()}, {name} opened during lockdown — I'll leave it, but you should know.",
             }
 
         _LOGGER.warning("Lockdown: securing %s after it opened", eid)
@@ -1885,8 +1946,8 @@ class LockdownManager:
             if not self.active or eid in self.exempt_windows:
                 return
             st = self.hass.states.get(eid)
-            if st is None or self._is_secure(dom, st.state):
-                return  # secure now — nothing to report
+            if st is None or self._is_indeterminate(st.state) or self._is_secure(dom, st.state):
+                return  # secure, offline, or gone — nothing to report
             if eid in self._alerted:
                 return
             self._alerted.add(eid)

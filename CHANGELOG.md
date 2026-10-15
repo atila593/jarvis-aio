@@ -1,3 +1,26 @@
+## [9.21.2] — Lockdown: stop fighting (and nagging about) garage doors
+
+Two reported lockdown bugs with cloud-connected garage doors, both fixed:
+
+- **"JARVIS keeps trying to secure doors that are already secure."** Cloud
+  garage/opener integrations routinely drop to `unavailable`/`unknown` when
+  their link flaps. Lockdown read that indeterminate state as *open*, tried to
+  "secure" an already-closed door, and — since the close was a no-op — alerted
+  *"I tried to secure … but it's still open."* Indeterminate states are now
+  treated as neither open nor secure: never a breach, never actuated. A cover
+  that advertises no CLOSE service is likewise adopted instead of nagged.
+- **"It blocked me and my automation from opening the garage when I arrived
+  home."** While lockdown was active, opening a garage made JARVIS immediately
+  close it again. A motorized garage/gate that *opens* mid-lockdown is almost
+  always a resident (or their arrival automation) — and bringing one down on a
+  vehicle or a person is a safety hazard — so JARVIS no longer force-closes it.
+  It notes the event and alerts once, then leaves the door alone. (Closing a
+  *genuinely* open garage at arm time, when the house is being secured empty,
+  is unchanged.)
+
+No configuration change is needed. If you have cloud garage doors, **update to
+9.21.2.**
+
 ## [9.21.1] — Security: require admin for panel state changes (CWE-862)
 
 A follow-up security audit after GHSA-fx76-fcmp-phmq found the same class of
