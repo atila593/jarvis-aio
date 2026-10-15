@@ -2499,3 +2499,39 @@ async def test_mixed_command_write_needs_admin_read_stays_open(fake_hass, monkey
     await websocket.ws_mutes(
         fake_hass, admin, {"id": 3, "action": "mute", "entity_id": "light.x"})
     assert admin.error is None and admin.result is not None
+
+
+# ── #394: the uploaded reference photo must be returnable for display ──────────
+
+async def test_face_reference_returns_inline_data_url(fake_hass, monkeypatch, tmp_path):
+    """jarvis/face_reference returns the enrolled photo as a base64 data URL so
+    the panel can show the snapshot the user uploaded (it is NOT served via a
+    public /local path)."""
+    import base64
+    websocket = _load_websocket_module()
+    ref = tmp_path / "sam.jpg"
+    ref.write_bytes(b"\xff\xd8\xffJPEGBYTES")
+    recog = types.SimpleNamespace(
+        face_reference_path=lambda name: str(ref) if name == "Sam" else None)
+    _install_jc_module(monkeypatch, "recognition", recog)
+
+    conn = _Conn()
+    await websocket.ws_face_reference(fake_hass, conn, {"id": 1, "name": "Sam"})
+    assert conn.error is None
+    msg_id, payload = conn.result
+    assert msg_id == 1
+    assert payload["image"].startswith("data:image/jpeg;base64,")
+    decoded = base64.b64decode(payload["image"].split(",", 1)[1])
+    assert decoded == b"\xff\xd8\xffJPEGBYTES"
+
+
+async def test_face_reference_missing_returns_none(fake_hass, monkeypatch):
+    """A resident with no enrolled reference yields image=None (no error)."""
+    websocket = _load_websocket_module()
+    recog = types.SimpleNamespace(face_reference_path=lambda name: None)
+    _install_jc_module(monkeypatch, "recognition", recog)
+
+    conn = _Conn()
+    await websocket.ws_face_reference(fake_hass, conn, {"id": 2, "name": "Nobody"})
+    assert conn.error is None
+    assert conn.result == (2, {"image": None})

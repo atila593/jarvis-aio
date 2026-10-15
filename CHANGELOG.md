@@ -1,3 +1,30 @@
+## [9.21.3] — Faces reference photos + voice control of helper toggles
+
+Two reported bugs fixed.
+
+**Faces: the reference photo you upload now actually shows up (#394).** Enrolled
+reference photos live privately under `<config>/jarvis/faces_ref/` and were never
+served, so a resident you'd uploaded a photo for — but who hadn't been seen on a
+camera yet — showed only an initial-letter avatar: the snapshot "never appeared."
+The resident card now falls back to the enrolled reference photo when there's no
+live sighting, fetched inline over the authenticated websocket (still **not**
+exposed at a public `/local` URL, so the privacy posture is unchanged). The
+"Snapshot now" camera you pick is also remembered per-browser, so it no longer
+resets on every panel refresh.
+
+**Voice: JARVIS can control `input_boolean` (and other helper) entities (#395).**
+Asking JARVIS to turn an `input_boolean` on/off failed — it would ask for the
+exact entity and still miss — while Home Assistant's own Assist handled it. The
+control path was always domain-generic; the entity was simply never *surfaced*:
+`input_boolean` was absent from the home-context, entity-search and
+`bulk_control` domain lists, so the model never learned the entity existed and
+fell back to a vague turn-off that matched nothing. `input_boolean` is now in the
+home context and bulk-control, and entity search also covers `input_button`,
+`input_number`, `input_select`, `humidifier`, `vacuum`, `valve`, `siren`,
+`water_heater` and `button`, so the model can resolve them by name and act.
+
+No configuration change is needed.
+
 ## [9.21.2] — Lockdown: stop fighting (and nagging about) garage doors
 
 Two reported lockdown bugs with cloud-connected garage doors, both fixed:
