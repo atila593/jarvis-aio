@@ -1,3 +1,26 @@
+## [9.22.0] — Vocal biometrics groundwork (in-process speaker ID, Step 1)
+
+First, **inert** step toward in-process vocal biometrics — the voice analog of
+the experimental LLM face matcher, for households without a dedicated
+speaker-recognition service (design note: issue #397).
+
+This release ships only the foundation, with **no behavior change**: nothing
+captures audio, no model loads, and no identity decision is affected yet.
+
+- **`voice_roster`** — a privacy-first enrolled-voiceprint store. It keeps
+  speaker **embeddings, never audio**, as a running-mean centroid + sample count
+  per person under `<config>/jarvis/voices_ref/`. Atomic writes, path-safe keys,
+  never raises.
+- **`speaker_id`** — the matching math: cosine similarity against enrolled
+  profiles, with a conservative two-tier verdict (a weak match is a *guess*; a
+  *trusted* match requires a high threshold **and** ≥2 enrolled samples — the
+  line a caller must clear before voice may ever stand an intrusion alert down).
+  The embedding backend is a seam that reports unavailable, so the whole path
+  stays a no-op until the audio-capture + model work lands.
+
+Later steps (tracked in #397) add the STT-tee audio capture, the ONNX speaker
+model, the identity wiring, and the Voices panel. No configuration change.
+
 ## [9.21.3] — Faces reference photos + voice control of helper toggles
 
 Two reported bugs fixed.
