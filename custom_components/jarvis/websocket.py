@@ -120,6 +120,30 @@ def _runtime_opt(hass: HomeAssistant, entry, key: str, default=None):
     return jarvis_config.runtime_get(hass, entry, key, default)
 
 
+def _is_admin(connection) -> bool:
+    """True only for an authenticated admin Home Assistant user. Fail-safe:
+    a missing connection/user reads as non-admin, so write actions deny by
+    default (CWE-862 hardening for the panel's websocket commands)."""
+    user = getattr(connection, "user", None)
+    return bool(user is not None and getattr(user, "is_admin", False))
+
+
+def _deny_non_admin(connection, msg) -> bool:
+    """Guard a *write* action on a mixed read/write panel command. Returns True
+    (and sends an 'unauthorized' error) when the caller is not an admin, so the
+    handler should ``return``; returns False when the caller may proceed.
+
+    Read actions on the same command stay available to non-admin users — only
+    the mutating branch is gated. Pure-write commands use the stronger
+    ``@websocket_api.require_admin`` decorator instead."""
+    if _is_admin(connection):
+        return False
+    connection.send_error(
+        msg["id"], "unauthorized",
+        "administrator privileges are required for this action")
+    return True
+
+
 def _int_opt(hass: HomeAssistant, entry, key: str, default: int) -> int:
     """Read an int option, preserving 0 — `value or default` clobbers a valid 0."""
     v = _runtime_opt(hass, entry, key, default)
@@ -1795,6 +1819,7 @@ def recent_debug_log(n: int = 150) -> list:
     return entries[-n:] if n and n > 0 else entries
 
 
+@websocket_api.require_admin
 @websocket_api.websocket_command({
     vol.Required("type"): "jarvis/reload_appliances",
 })
@@ -1823,6 +1848,7 @@ async def ws_reload_appliances(
         connection.send_error(msg["id"], "reload_failed", str(exc))
 
 
+@websocket_api.require_admin
 @websocket_api.websocket_command({
     vol.Required("type"): "jarvis/set_lockdown",
     vol.Required("on"): bool,
@@ -1870,6 +1896,7 @@ async def ws_get_knowledge(
         connection.send_error(msg["id"], "knowledge_failed", str(exc))
 
 
+@websocket_api.require_admin
 @websocket_api.websocket_command({
     vol.Required("type"): "jarvis/add_knowledge",
     vol.Required("key"): str,
@@ -1898,6 +1925,7 @@ async def ws_add_knowledge(
         connection.send_error(msg["id"], "add_failed", str(exc))
 
 
+@websocket_api.require_admin
 @websocket_api.websocket_command({
     vol.Required("type"): "jarvis/forget_knowledge",
     vol.Optional("fact_id"): int,
@@ -1983,6 +2011,7 @@ async def ws_compute_camera_coverage(
         connection.send_error(msg["id"], "coverage_failed", str(exc))
 
 
+@websocket_api.require_admin
 @websocket_api.websocket_command({
     vol.Required("type"): "jarvis/update_config",
     vol.Required("key"): str,
@@ -2105,6 +2134,7 @@ async def ws_get_enforcement(
         connection.send_error(msg["id"], "enforcement_failed", str(exc))
 
 
+@websocket_api.require_admin
 @websocket_api.websocket_command({
     vol.Required("type"): "jarvis/set_enforcement",
     vol.Required("key"): str,
@@ -2605,6 +2635,7 @@ async def ws_get_calibration(
         })
 
 
+@websocket_api.require_admin
 @websocket_api.websocket_command({
     vol.Required("type"): "jarvis/run_analysis",
 })
@@ -2645,6 +2676,7 @@ async def ws_get_cognitive_status(
         })
 
 
+@websocket_api.require_admin
 @websocket_api.websocket_command({
     vol.Required("type"): "jarvis/suggestion_action",
     vol.Required("suggestion_id"): int,
@@ -2737,6 +2769,7 @@ async def ws_camera_snapshot(
         connection.send_error(msg["id"], "snapshot_failed", str(exc))
 
 
+@websocket_api.require_admin
 @websocket_api.websocket_command({
     vol.Required("type"): "jarvis/rename_camera",
     vol.Required("entity_id"): str,
@@ -2786,6 +2819,8 @@ async def ws_biometrics(
     wearable entities and toggle the feature. Context only; never medical."""
     try:
         from . import biometrics, jarvis_config
+        if msg["action"] in ("enable", "disable") and _deny_non_admin(connection, msg):
+            return
         if msg["action"] == "enable":
             await hass.async_add_executor_job(
                 jarvis_config.set, "biometrics_enabled", True
@@ -2833,6 +2868,8 @@ async def ws_energy(
     try:
         from . import energy, jarvis_config
         states = {state.entity_id: state for state in hass.states.async_all()}
+        if msg["action"] == "set_agency" and _deny_non_admin(connection, msg):
+            return
         if msg["action"] == "set_agency":
             level = str(msg.get("agency", "") or "").lower()
             if level not in (energy.AGENCY_ADVISORY, energy.AGENCY_OPT_IN,
@@ -2898,6 +2935,8 @@ async def ws_mode(
     safety."""
     try:
         from . import modes
+        if msg["action"] == "set" and _deny_non_admin(connection, msg):
+            return
         if msg["action"] == "set":
             res = await hass.async_add_executor_job(
                 modes.set_mode, msg.get("mode", ""), msg.get("reason", ""))
@@ -2936,6 +2975,9 @@ async def ws_intrusion(
     acknowledge it (hold auto-escalation without cancelling) (v6.69.0)."""
     try:
         from . import intrusion
+        if msg["action"] in ("dismiss", "acknowledge", "label") \
+                and _deny_non_admin(connection, msg):
+            return
         if msg["action"] == "dismiss":
             res = await intrusion.async_dismiss_intrusion(
                 hass, msg.get("reason", "panel")
@@ -2998,6 +3040,9 @@ async def ws_faces(
     try:
         from . import recognition, face_roster
         action = msg.get("action", "list")
+        if action in ("add_resident", "remove_resident", "set_reference",
+                      "remove_reference") and _deny_non_admin(connection, msg):
+            return
         # Roster file I/O happens on the executor; the read below then runs on the
         # event loop against an already-loaded roster (no blocking file read).
         if action == "add_resident" and msg.get("name"):
@@ -3062,6 +3107,8 @@ async def ws_mutes(
     try:
         from . import output_gate
         action = msg.get("action", "list")
+        if action in ("mute", "unmute", "clear") and _deny_non_admin(connection, msg):
+            return
         eid = msg.get("entity_id")
         cat = msg.get("category")
         if action == "mute" and (eid or cat):
@@ -3082,6 +3129,7 @@ async def ws_mutes(
         connection.send_error(msg["id"], "mutes_failed", str(exc))
 
 
+@websocket_api.require_admin
 @websocket_api.websocket_command({
     vol.Required("type"): "jarvis/voice_confirm_test",
 })
@@ -3141,6 +3189,8 @@ async def ws_semantic_search(
     action = msg["action"]
     try:
         from . import embeddings, jarvis_config
+        if action in ("enable", "disable") and _deny_non_admin(connection, msg):
+            return
         if action == "enable":
             await hass.async_add_executor_job(
                 jarvis_config.set, "semantic_search", True
@@ -3203,6 +3253,9 @@ async def ws_documents(
     action = msg["action"]
     try:
         from . import documents
+        if action in ("ingest", "upload", "scan_watch", "delete") \
+                and _deny_non_admin(connection, msg):
+            return
         if action == "status":
             res = await hass.async_add_executor_job(documents.library_status)
         elif action == "ingest":
@@ -3315,6 +3368,7 @@ async def ws_mmwave_overview(
         connection.send_error(msg["id"], "mmwave_overview_failed", str(exc))
 
 
+@websocket_api.require_admin
 @websocket_api.websocket_command({
     vol.Required("type"): "jarvis/camera_location",
     vol.Required("entity_id"): str,
@@ -3438,6 +3492,7 @@ async def ws_get_area_sparklines(
         connection.send_error(msg["id"], "sparklines_failed", str(exc))
 
 
+@websocket_api.require_admin
 @websocket_api.websocket_command({
     vol.Required("type"): "jarvis/goal_action",
     vol.Required("action"): vol.In(["cancel", "delete", "create"]),
