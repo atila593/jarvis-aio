@@ -32,9 +32,13 @@ def _load_websocket_module():
 
 
 class _Conn:
-    def __init__(self):
+    def __init__(self, is_admin=True):
         self.result = None
         self.error = None
+        # Panel write actions now require an admin user (CWE-862 hardening);
+        # default these test connections to admin so write-path tests exercise
+        # the handler, and pass is_admin=False to assert the denial.
+        self.user = types.SimpleNamespace(is_admin=is_admin)
 
     def send_result(self, msg_id, payload):
         self.result = (msg_id, payload)
@@ -2451,3 +2455,47 @@ async def test_list_models_error_is_generic_not_reflected(fake_hass, monkeypatch
     assert payload["models"] == []
     assert "SECRET-INTERNAL-RESPONSE-BODY" not in payload["error"]
     assert "169.254.169.254" not in payload["error"]
+
+
+# ── CWE-862: panel websocket commands require admin for state changes ───────────
+
+def test_pure_write_commands_are_admin_gated_in_source():
+    """Every state-changing panel command must carry @websocket_api.require_admin
+    so a non-admin HA user can't invoke it (the panel is require_admin=False)."""
+    comp = pathlib.Path(__file__).resolve().parents[2] / "custom_components" / "jarvis"
+    src = (comp / "websocket.py").read_text(encoding="utf-8")
+    for cmd in ["reload_appliances", "set_lockdown", "add_knowledge",
+                "forget_knowledge", "update_config", "set_enforcement",
+                "run_analysis", "suggestion_action", "rename_camera",
+                "voice_confirm_test", "camera_location", "goal_action"]:
+        idx = src.index(f'"jarvis/{cmd}"')
+        assert "require_admin" in src[idx - 170:idx], \
+            f"jarvis/{cmd} must be gated with @websocket_api.require_admin"
+
+
+async def test_mixed_command_write_needs_admin_read_stays_open(fake_hass, monkeypatch):
+    """On a mixed read/write command, a non-admin is denied the write action but
+    keeps the read action; an admin gets both."""
+    websocket = _load_websocket_module()
+    og = types.SimpleNamespace(
+        shush=lambda **k: None, unshush=lambda **k: None,
+        current_mutes=lambda: {"entities": [], "categories": [], "all": False})
+    _install_jc_module(monkeypatch, "output_gate", og)
+
+    # Non-admin → a WRITE action (mute) is rejected and nothing is mutated.
+    nonadmin = _Conn(is_admin=False)
+    await websocket.ws_mutes(
+        fake_hass, nonadmin, {"id": 1, "action": "mute", "entity_id": "light.x"})
+    assert nonadmin.result is None
+    assert nonadmin.error is not None and nonadmin.error[1] == "unauthorized"
+
+    # Non-admin → the READ action (list) still works.
+    reader = _Conn(is_admin=False)
+    await websocket.ws_mutes(fake_hass, reader, {"id": 2, "action": "list"})
+    assert reader.error is None and reader.result is not None
+
+    # Admin → the write action proceeds.
+    admin = _Conn(is_admin=True)
+    await websocket.ws_mutes(
+        fake_hass, admin, {"id": 3, "action": "mute", "entity_id": "light.x"})
+    assert admin.error is None and admin.result is not None

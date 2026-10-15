@@ -1,3 +1,33 @@
+## [9.21.1] — Security: require admin for panel state changes (CWE-862)
+
+A follow-up security audit after GHSA-fx76-fcmp-phmq found the same class of
+issue more broadly: the JARVIS panel is registered `require_admin=False`, so any
+authenticated **non-admin** Home Assistant user could open it and invoke the
+websocket commands that **change state** — not just read it.
+
+**Fixed:** every state-changing panel command now requires an administrator.
+
+- **Admin-only now (whole command):** `update_config`, `set_lockdown`,
+  `set_enforcement`, `add_knowledge`, `forget_knowledge`, `reload_appliances`,
+  `rename_camera`, `camera_location`, `run_analysis`, `suggestion_action`,
+  `voice_confirm_test`, `goal_action` (plus `list_models` from 9.21.0).
+- **Admin-only for the write action, read still open to everyone** (mixed
+  commands): `faces` (add/remove resident, set/remove reference), `intrusion`
+  (dismiss / acknowledge / label), `mutes`, `mode` (set), `energy` (set agency),
+  `biometrics` (enable/disable), `semantic_search` (enable/disable), `documents`
+  (ingest / upload / scan / delete). Non-admins keep the read/display paths.
+- **Unchanged:** pure read-only commands (status, dashboards, camera tiles, etc.)
+  remain available to any panel user; light toggles already route through Home
+  Assistant's own permission-gated services.
+
+**Audit also confirmed clean:** no `eval`/`exec`/`pickle`/`yaml.load`/`os.system`/
+`subprocess`/`shell=True` anywhere, no secrets (API keys / IMAP password) returned
+in any websocket response, no custom HTTP endpoints taking user input, and
+file-writing paths (face references, snapshots) already sanitise names against
+traversal.
+
+If you have non-admin Home Assistant users, **update to 9.21.1.**
+
 ## [9.21.0] — Faces panel: enlarge snapshots + name a new face
 
 ### Security — SSRF + missing authorization in `jarvis/list_models` (GHSA-fx76-fcmp-phmq)
