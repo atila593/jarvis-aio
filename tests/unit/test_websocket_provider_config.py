@@ -2535,3 +2535,67 @@ async def test_face_reference_missing_returns_none(fake_hass, monkeypatch):
     await websocket.ws_face_reference(fake_hass, conn, {"id": 2, "name": "Nobody"})
     assert conn.error is None
     assert conn.result == (2, {"image": None})
+
+
+# ── #397: Voices (vocal biometrics) websocket command ─────────────────────────
+
+def _install_voice_stubs(monkeypatch, *, enrolled, enroll_ok=True, backend=False):
+    enroll_calls = []
+
+    def _enroll(name, emb):
+        enroll_calls.append((name, emb))
+        return enroll_ok
+
+    vr = types.SimpleNamespace(
+        all_profiles=lambda: list(enrolled),
+        enroll=_enroll,
+        remove=lambda name: True,
+    )
+    sid = types.SimpleNamespace(
+        backend_available=lambda: backend,
+        embed_wav=lambda raw: [0.1] * 32,
+        identify=lambda emb: {"name": "Sam", "score": 90.0, "trusted": True},
+    )
+    vrec = types.SimpleNamespace(current_local_speaker=lambda: None)
+    _install_jc_module(monkeypatch, "voice_roster", vr)
+    _install_jc_module(monkeypatch, "speaker_id", sid)
+    _install_jc_module(monkeypatch, "voice_recognition", vrec)
+    return enroll_calls
+
+
+async def test_voices_list_returns_profiles_and_backend(fake_hass, monkeypatch):
+    websocket = _load_websocket_module()
+    fake_hass.config_entries.async_entries = lambda *a, **k: []
+    _install_voice_stubs(monkeypatch, enrolled=[
+        {"name": "Sam", "count": 3, "updated": 1.0}], backend=True)
+
+    conn = _Conn()
+    await websocket.ws_voices(fake_hass, conn, {"id": 1, "action": "list"})
+    assert conn.error is None
+    _id, payload = conn.result
+    assert payload["backend_available"] is True
+    assert payload["profiles"] == [{"name": "Sam", "count": 3, "updated": 1.0}]
+
+
+async def test_voices_enroll_requires_admin(fake_hass, monkeypatch):
+    websocket = _load_websocket_module()
+    _install_voice_stubs(monkeypatch, enrolled=[], backend=True)
+
+    nonadmin = _Conn(is_admin=False)
+    await websocket.ws_voices(fake_hass, nonadmin, {
+        "id": 1, "action": "enroll", "name": "Sam", "audio": "data:audio/wav;base64,AAAA"})
+    assert nonadmin.result is None
+    assert nonadmin.error is not None and nonadmin.error[1] == "unauthorized"
+
+
+async def test_voices_enroll_admin_stores_voiceprint(fake_hass, monkeypatch):
+    websocket = _load_websocket_module()
+    fake_hass.config_entries.async_entries = lambda *a, **k: []
+    calls = _install_voice_stubs(monkeypatch, enrolled=[], backend=True)
+
+    admin = _Conn(is_admin=True)
+    await websocket.ws_voices(fake_hass, admin, {
+        "id": 2, "action": "enroll", "name": "Sam", "audio": "data:audio/wav;base64,AAAA"})
+    assert admin.error is None
+    assert calls and calls[0][0] == "Sam"      # enroll() was called with the name
+    assert admin.result is not None             # returns the refreshed list

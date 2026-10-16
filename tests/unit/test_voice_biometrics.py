@@ -130,6 +130,102 @@ def test_identify_reads_roster(vr, sid):
     assert res["trusted"] is True
 
 
-def test_backend_is_inert_in_step_one(sid):
+def test_backend_is_inert_without_model(sid):
+    # No onnxruntime + model in the sandbox → the whole embed path is a no-op.
     assert sid.backend_available() is False
     assert sid.embed_pcm(b"\x00\x00" * 16000, 16000) is None
+    assert sid.embed_wav(b"RIFFxxxx") is None
+
+
+# ── speaker_id audio helpers (pure, no model needed) ─────────────────────────
+
+def test_pcm_to_float_decodes_16bit_mono(sid):
+    import struct
+    raw = struct.pack("<4h", 0, 16384, -16384, 32767)
+    out = sid._pcm_to_float(raw, 2, 1)
+    assert len(out) == 4
+    assert out[0] == 0.0
+    assert 0.49 < out[1] < 0.51
+    assert all(-1.0 <= x <= 1.0 for x in out)
+
+
+def test_pcm_to_float_downmixes_stereo(sid):
+    import struct
+    raw = struct.pack("<4h", 100, 300, 0, 0)   # 2 stereo frames
+    out = sid._pcm_to_float(raw, 2, 2)
+    assert len(out) == 2                         # mono after downmix
+
+
+def test_resample_to_target_changes_length(sid):
+    src = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
+    out = sid._resample_to_target(src, 8000)     # 8k → 16k ≈ doubles
+    assert abs(len(out) - 2 * len(src)) <= 2
+    assert sid._resample_to_target(src, 16000) is src   # no-op at target rate
+
+
+def test_decode_wav_roundtrip(sid):
+    import io
+    import wave
+    import struct
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes(struct.pack("<8h", *range(8)))
+    samples, sr = sid._decode_wav(buf.getvalue())
+    assert sr == 16000
+    assert len(samples) == 8
+
+
+# ── voice_recognition in-process provider (Step 3) ───────────────────────────
+
+@pytest.fixture
+def vrec(load, monkeypatch):
+    mod = load("voice_recognition")
+    mod.note_local_speaker(None)
+    return mod
+
+
+def _flag_on(mod, monkeypatch):
+    monkeypatch.setattr(mod, "_cfg",
+                        lambda k, d: True if k == "voice_recognition_local" else d)
+
+
+def test_note_and_current_roundtrip(vrec):
+    vrec.note_local_speaker({"name": "Sam", "score": 90.0, "trusted": True})
+    cur = vrec.current_local_speaker()
+    assert cur and cur["name"] == "Sam"
+
+
+def test_current_speaker_goes_stale(vrec):
+    vrec.note_local_speaker({"name": "Sam", "trusted": True, "score": 90})
+    vrec._local_speaker["ts"] = 0.0          # force past the recency window
+    assert vrec.current_local_speaker() is None
+
+
+def test_identify_local_off_by_default(vrec, fake_hass):
+    vrec.note_local_speaker({"name": "Sam", "trusted": True, "score": 90})
+    assert vrec.identify_local(fake_hass) == {}     # flag defaults off
+
+
+def test_identify_local_trusted_only(vrec, fake_hass, monkeypatch):
+    _flag_on(vrec, monkeypatch)
+    vrec.note_local_speaker({"name": "Sam", "trusted": True, "score": 88})
+    assert vrec.identify_local(fake_hass) == {"Sam": pytest.approx(0.88)}
+
+
+def test_identify_local_withholds_a_guess(vrec, fake_hass, monkeypatch):
+    _flag_on(vrec, monkeypatch)
+    vrec.note_local_speaker({"name": "Sam", "trusted": False, "score": 60})
+    assert vrec.identify_local(fake_hass) == {}     # a guess never feeds identity
+
+
+def test_identify_falls_back_to_local_when_no_source(vrec, fake_hass, monkeypatch):
+    # No external source configured → identify() uses the in-process trusted vote.
+    monkeypatch.setattr(vrec, "_cfg", lambda k, d: {
+        "voice_recognition_source": "",
+        "voice_recognition_local": True,
+    }.get(k, d))
+    vrec.note_local_speaker({"name": "Sam", "trusted": True, "score": 91})
+    assert vrec.identify(fake_hass) == {"Sam": pytest.approx(0.91)}
