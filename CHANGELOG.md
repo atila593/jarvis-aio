@@ -31,6 +31,8 @@ fail-open throughout; a default install is unchanged.**
 To enable: install `onnxruntime` in your HA environment, drop a raw-waveform
 speaker model at the model path, set a delegate STT, and turn on local voice ID.
 No configuration change is needed to stay on the default (feature off).
+**Full step-by-step setup is in [`docs/voice-recognition.md`](docs/voice-recognition.md)**
+(the "JARVIS's own in-process speaker ID" section).
 
 ## [9.22.0] — Vocal biometrics groundwork (in-process speaker ID, Step 1)
 
