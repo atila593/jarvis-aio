@@ -3,6 +3,7 @@
   "name": "JARVIS AI Assistant",
   "after_dependencies": [
     "conversation",
+    "stt",
     "tts",
     "media_player",
     "camera",
@@ -31,5 +32,5 @@
     "anthropic>=0.39.0",
     "pypdf>=4.0.0"
   ],
-  "version": "9.22.0"
+  "version": "9.23.0"
 }

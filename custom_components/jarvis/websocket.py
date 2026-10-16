@@ -85,6 +85,7 @@ def async_register(hass: HomeAssistant) -> None:
         websocket_api.async_register_command(hass, ws_intrusion)
         websocket_api.async_register_command(hass, ws_faces)
         websocket_api.async_register_command(hass, ws_face_reference)
+        websocket_api.async_register_command(hass, ws_voices)
         websocket_api.async_register_command(hass, ws_mutes)
         websocket_api.async_register_command(hass, ws_mode)
         websocket_api.async_register_command(hass, ws_energy)
@@ -791,6 +792,8 @@ async def ws_get_panel_data(
                 "identity_voice_fingerprint": bool(_runtime_opt(hass, entry, "identity_voice_fingerprint", False)),
                 "voice_recognition_source": str(_runtime_opt(hass, entry, "voice_recognition_source", "") or ""),
                 "voice_recognition_auto_enroll": bool(_runtime_opt(hass, entry, "voice_recognition_auto_enroll", True)),
+                "voice_recognition_local": bool(_runtime_opt(hass, entry, "voice_recognition_local", False)),
+                "voice_recognition_delegate_stt": str(_runtime_opt(hass, entry, "voice_recognition_delegate_stt", "") or ""),
                 "imap_enabled": bool(_runtime_opt(hass, entry, "imap_enabled", False)),
                 "imap_host": str(_runtime_opt(hass, entry, "imap_host", "") or ""),
                 "imap_port": int(_runtime_opt(hass, entry, "imap_port", 993) or 993),
@@ -1622,6 +1625,12 @@ PANEL_WRITABLE_KEYS = {
     "identity_voice_fingerprint",   # bool: voice-fingerprint identity tier (needs a GPU)
     "voice_recognition_source",     # str: voice-recognition source identifier
     "voice_recognition_auto_enroll",# bool: auto-enroll newly heard voices
+    "voice_recognition_local",      # bool: in-process speaker ID (Path B; needs backend+model)
+    "voice_recognition_delegate_stt",  # str: underlying STT the tee delegates transcription to
+    "voice_embedding_model_path",   # str: path to the ONNX speaker-embedding model
+    "voice_local_trust_threshold",  # float: cosine ≥ this (with enough samples) = trusted match
+    "voice_local_guess_threshold",  # float: cosine ≥ this = panel-only guess
+    "voice_local_min_samples",      # int: enrolled samples required before a match can be trusted
     "imap_enabled",                 # bool: read-only IMAP inbox access
     "imap_host",                    # str: IMAP host
     "imap_port",                    # int: IMAP port (default 993)
@@ -3136,6 +3145,92 @@ async def ws_face_reference(
     except Exception as exc:
         _LOGGER.exception("ws_face_reference failed: %s", exc)
         connection.send_error(msg["id"], "face_reference_failed", str(exc))
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "jarvis/voices",
+    vol.Optional("action"): vol.In(["list", "enroll", "identify", "forget"]),
+    vol.Optional("name"): str,
+    vol.Optional("audio"): str,   # base64 WAV clip for enroll/identify (Path B)
+})
+@websocket_api.async_response
+async def ws_voices(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict,
+) -> None:
+    """Voices panel (vocal biometrics, Path B; #397): enrolled voiceprints and
+    the live in-process speaker. Writes (enroll / forget) require an admin; the
+    list/identify reads stay open like the rest of the panel. Audio is embedded
+    on the executor (model inference) and only the embedding is kept — never the
+    clip."""
+    try:
+        from . import voice_roster, speaker_id, voice_recognition
+        action = msg.get("action", "list")
+        if action in ("enroll", "forget") and _deny_non_admin(connection, msg):
+            return
+
+        if action == "enroll" and msg.get("name") and msg.get("audio"):
+            import base64
+            try:
+                raw = base64.b64decode(str(msg["audio"]).split(",", 1)[-1])
+            except Exception:
+                raw = b""
+            emb = await hass.async_add_executor_job(speaker_id.embed_wav, raw)
+            if not emb:
+                connection.send_error(
+                    msg["id"], "enroll_failed",
+                    "could not embed that clip (backend off, clip too short, or unreadable)")
+                return
+            ok = await hass.async_add_executor_job(
+                voice_roster.enroll, msg["name"], emb)
+            if not ok:
+                connection.send_error(msg["id"], "enroll_failed",
+                                      "could not store the voiceprint")
+                return
+            jarvis_log("VOICE", f"Voiceprint enrolled: {msg['name']}")
+
+        elif action == "forget" and msg.get("name"):
+            await hass.async_add_executor_job(voice_roster.remove, msg["name"])
+            jarvis_log("VOICE", f"Voiceprint removed: {msg['name']}")
+
+        elif action == "identify" and msg.get("audio"):
+            import base64
+            try:
+                raw = base64.b64decode(str(msg["audio"]).split(",", 1)[-1])
+            except Exception:
+                raw = b""
+            emb = await hass.async_add_executor_job(speaker_id.embed_wav, raw)
+            match = await hass.async_add_executor_job(speaker_id.identify, emb) if emb else None
+            connection.send_result(msg["id"], {"match": match})
+            return
+
+        entry = _get_entry(hass)
+        profiles = await hass.async_add_executor_job(_voice_profiles_summary)
+        backend = await hass.async_add_executor_job(speaker_id.backend_available)
+        connection.send_result(msg["id"], {
+            "profiles": profiles,
+            "current": voice_recognition.current_local_speaker(),
+            "local_enabled": bool(_runtime_opt(hass, entry, "voice_recognition_local", False)),
+            "delegate_stt": str(_runtime_opt(hass, entry, "voice_recognition_delegate_stt", "") or ""),
+            "model_path": str(_runtime_opt(hass, entry, "voice_embedding_model_path", "") or ""),
+            "backend_available": bool(backend),
+        })
+    except Exception as exc:
+        _LOGGER.exception("ws_voices failed: %s", exc)
+        connection.send_error(msg["id"], "voices_failed", str(exc))
+
+
+def _voice_profiles_summary() -> list:
+    """Enrolled voiceprints as display rows (no embeddings) for the panel."""
+    try:
+        from . import voice_roster
+        return [
+            {"name": p["name"], "count": p["count"], "updated": p.get("updated", 0)}
+            for p in voice_roster.all_profiles()
+        ]
+    except Exception:
+        return []
 
 
 @websocket_api.websocket_command({

@@ -1,3 +1,37 @@
+## [9.23.0] — In-process vocal biometrics (Path B, Steps 2–5)
+
+Builds the rest of in-process speaker identification on top of 9.22.0's engine —
+the voice analog of the experimental LLM face matcher, for households without a
+dedicated speaker-recognition service (design note: issue #397). **Opt-in and
+fail-open throughout; a default install is unchanged.**
+
+- **Capture (STT tee).** A new `stt` platform tees the utterance audio: it
+  forwards every chunk to a configured delegate STT (Whisper/cloud) for the real
+  transcription and keeps a copy to embed. The entity is registered **only** when
+  local voice ID is enabled, a delegate STT is set, and the embedding backend is
+  present — so a default install adds no entity and the speech path is untouched.
+  Embedding runs as a background task **after** the transcript is returned, so it
+  adds no latency and can never affect what you said.
+- **Embedding backend (optional).** `speaker_id` gained a lazy, **optional**
+  `onnxruntime` backend with a configurable model path (default
+  `<config>/jarvis/models/speaker.onnx`). It is **not** a forced dependency — if
+  the runtime or model is absent the whole path stays inert (no heavy wheel on a
+  default install). Takes 16 kHz mono waveform; WAV/PCM decode, resample and
+  L2-normalize are built in.
+- **Identity wiring.** When no external speaker-ID service is configured, JARVIS's
+  own result feeds the identity voice tier — but **only a trusted match** (high
+  similarity *and* ≥2 enrolled samples); a weaker guess is panel-only and can
+  never stand a security alert down.
+- **Voices panel.** A new Voices card (Faces tab): enrolled voiceprints, live
+  "who's speaking", an enable toggle + delegate-STT / model-path fields, and
+  record-and-enroll / record-and-identify using the browser mic (captured to
+  16 kHz mono WAV). Writes are admin-gated. Voiceprints are stored as embeddings,
+  never audio.
+
+To enable: install `onnxruntime` in your HA environment, drop a raw-waveform
+speaker model at the model path, set a delegate STT, and turn on local voice ID.
+No configuration change is needed to stay on the default (feature off).
+
 ## [9.22.0] — Vocal biometrics groundwork (in-process speaker ID, Step 1)
 
 First, **inert** step toward in-process vocal biometrics — the voice analog of

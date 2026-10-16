@@ -4734,6 +4734,7 @@ dotLabel.textContent = lightBtn.classList.contains("adl")
       </div>
       <div class="mem-sub faces-llm-note">No dedicated face backend? With this on, JARVIS asks its own local vision model whether a camera frame matches a resident's <b>reference photo</b> (set one on each resident card below). It's a rough guess — results are clearly marked <b>LLM GUESS</b>, and this never disables intrusion alerts. For reliable recognition, use Frigate's native face recognition instead.</div>
       <div class="faces-body" id="faces-body"><div class="mmwave-empty">Loading recognized faces…</div></div>
+      <div class="voices-body" id="voices-body"></div>
     </div>
   </div>
   ` : ''}
@@ -8229,8 +8230,9 @@ ${this._renderExcludedEntities(d)}
     };
     addBtn?.addEventListener("click", add);
     input?.addEventListener("keydown", (e) => { if (e.key === "Enter") add(); });
-    refresh?.addEventListener("click", () => this._fetchFaces());
+    refresh?.addEventListener("click", () => { this._fetchFaces(); this._fetchVoices(); });
     this._fetchFaces();
+    this._fetchVoices();
   }
 
   async _facesAction(action, name) {
@@ -8252,6 +8254,180 @@ ${this._renderExcludedEntities(d)}
       this._faces = { error: true };
     }
     this._renderFaces();
+  }
+
+  // ── Voices (vocal biometrics, Path B; #397) ──────────────────────────────
+  async _fetchVoices() {
+    if (!this._hass) return;
+    try {
+      this._voices = await this._hass.callWS({ type: "jarvis/voices", action: "list" });
+    } catch (_) {
+      this._voices = { error: true };
+    }
+    this._renderVoices();
+  }
+
+  _renderVoices() {
+    const body = this.shadowRoot?.getElementById("voices-body");
+    if (!body) return;
+    const v = this._voices || {};
+    if (v.error) { body.innerHTML = ""; return; }   // stay quiet on older backends
+    const esc = (s) => this._esc(String(s ?? ""));
+    const profiles = Array.isArray(v.profiles) ? v.profiles : [];
+    const cur = v.current;
+    const backend = !!v.backend_available;
+    const statusLine = backend
+      ? `<span class="voices-ok">● speaker-ID backend ready</span>`
+      : `<span class="voices-off">○ backend not installed — add onnxruntime + a model to enable</span>`;
+    const curLine = cur && cur.name
+      ? `Speaking now: <b>${esc(cur.name)}</b> ${cur.trusted ? "" : "<span class='voices-guess'>(guess)</span>"} · ${esc(Math.round(cur.score || 0))}%`
+      : "Speaking now: —";
+    const rows = profiles.length
+      ? profiles.map(p =>
+          `<div class="voices-row"><span class="voices-name">${esc(p.name)}</span>`
+          + `<span class="voices-meta">${esc(p.count)} sample${p.count === 1 ? "" : "s"}</span>`
+          + `<button class="btn voices-forget" data-voice-forget="${esc(p.name)}" title="Forget this voiceprint">✕</button></div>`
+        ).join("")
+      : `<div class="mmwave-empty">No enrolled voices yet. Record a short sample below to teach JARVIS a voice.</div>`;
+    const localOn = !!v.local_enabled;
+    body.innerHTML = `
+      <div class="faces-section voices-section">
+        <div class="faces-section-head"><span>Voices</span><span class="faces-exp">EXPERIMENTAL</span></div>
+        <div class="faces-llm-row">
+          <label>Identify speakers in-process</label>
+          <button class="toggle-btn ${localOn ? 'on' : 'off'}" data-voice-toggle="${localOn ? 'false' : 'true'}">${localOn ? 'ON' : 'OFF'}</button>
+        </div>
+        ${localOn ? `<div class="voices-cfg">
+          <input class="cfg-field voices-delegate" type="text" placeholder="Delegate STT entity (e.g. stt.whisper)" value="${esc(v.delegate_stt || '')}"/>
+          <input class="cfg-field voices-model" type="text" placeholder="Model path (…/jarvis/models/speaker.onnx)" value="${esc(v.model_path || '')}"/>
+        </div>` : ''}
+        <div class="voices-status">${statusLine} · ${curLine}</div>
+        <div class="voices-list">${rows}</div>
+        <div class="voices-enroll">
+          <input class="cfg-field voices-name-input" type="text" placeholder="Name this voice…" list="faces-names-dl"/>
+          <button class="btn voices-rec" data-voice-rec="enroll" ${backend ? "" : "disabled"} title="Record ~4s and enroll">🎤 Record &amp; enroll</button>
+          <button class="btn voices-rec" data-voice-rec="identify" ${backend ? "" : "disabled"} title="Record ~4s and identify">🎤 Identify</button>
+        </div>
+        <div class="mem-sub">Voiceprints are stored as embeddings, never audio. A match only identifies a resident above a confidence threshold; weaker matches are shown as a guess and never stand security alerts down.</div>
+      </div>`;
+    body.querySelectorAll("[data-voice-forget]").forEach(el =>
+      el.addEventListener("click", () => this._voicesForget(el.getAttribute("data-voice-forget"))));
+    body.querySelectorAll("[data-voice-rec]").forEach(el =>
+      el.addEventListener("click", () => this._voicesRecord(el.getAttribute("data-voice-rec"))));
+    const toggle = body.querySelector("[data-voice-toggle]");
+    if (toggle) toggle.addEventListener("click", () =>
+      this._voicesSetCfg("voice_recognition_local", toggle.getAttribute("data-voice-toggle")));
+    const saveField = (sel, key) => {
+      const el = body.querySelector(sel);
+      if (!el) return;
+      el.dataset.saved = el.value;
+      const save = () => { if (el.value !== el.dataset.saved) { el.dataset.saved = el.value; this._voicesSetCfg(key, el.value); } };
+      el.addEventListener("blur", save);
+      el.addEventListener("keydown", (e) => { if (e.key === "Enter") el.blur(); });
+    };
+    saveField(".voices-delegate", "voice_recognition_delegate_stt");
+    saveField(".voices-model", "voice_embedding_model_path");
+  }
+
+  async _voicesSetCfg(key, value) {
+    if (!this._hass) return;
+    try {
+      await this._hass.callWS({ type: "jarvis/update_config", key, value });
+      this._toast("✓ saved", "ok");
+      await this._fetchVoices();
+    } catch (err) { this._toast(`✗ ${err?.message || err}`, "err"); }
+  }
+
+  async _voicesForget(name) {
+    if (!name || !this._hass) return;
+    try {
+      await this._hass.callWS({ type: "jarvis/voices", action: "forget", name });
+      this._toast(`✓ forgot voiceprint for ${name}`, "ok");
+      await this._fetchVoices();
+    } catch (err) { this._toast(`✗ ${err?.message || err}`, "err"); }
+  }
+
+  async _voicesRecord(mode) {
+    const body = this.shadowRoot?.getElementById("voices-body");
+    const nameInput = body?.querySelector(".voices-name-input");
+    const name = (nameInput?.value || "").trim();
+    if (mode === "enroll" && !name) { this._toast("✗ name the voice first", "err"); return; }
+    let wavB64;
+    try {
+      wavB64 = await this._recordWavBase64(4);
+    } catch (err) {
+      this._toast(`✗ mic unavailable — ${err?.message || err}`, "err");
+      return;
+    }
+    if (!wavB64) { this._toast("✗ no audio captured", "err"); return; }
+    try {
+      if (mode === "enroll") {
+        await this._hass.callWS({ type: "jarvis/voices", action: "enroll", name, audio: wavB64 });
+        if (nameInput) nameInput.value = "";
+        this._toast(`✓ enrolled ${name}`, "ok");
+        await this._fetchVoices();
+      } else {
+        const res = await this._hass.callWS({ type: "jarvis/voices", action: "identify", audio: wavB64 });
+        const m = res?.match;
+        this._toast(m && m.name
+          ? `Heard: ${m.name} (${Math.round(m.score || 0)}%${m.trusted ? "" : ", guess"})`
+          : "No confident match", m && m.trusted ? "ok" : "");
+      }
+    } catch (err) { this._toast(`✗ ${err?.message || err}`, "err"); }
+  }
+
+  // Record `seconds` from the mic and return a base64 16 kHz mono 16-bit WAV.
+  // All browser-only APIs live here (never at render), feature-detected.
+  async _recordWavBase64(seconds) {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!navigator.mediaDevices?.getUserMedia || !AC) {
+      throw new Error("recording not supported in this browser");
+    }
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const ctx = new AC();
+    try {
+      const source = ctx.createMediaStreamSource(stream);
+      const proc = ctx.createScriptProcessor(4096, 1, 1);
+      const chunks = [];
+      source.connect(proc);
+      proc.connect(ctx.destination);
+      await new Promise((resolve) => {
+        proc.onaudioprocess = (e) => chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+        setTimeout(resolve, Math.max(1, seconds) * 1000);
+      });
+      proc.disconnect(); source.disconnect();
+      return this._encodeWavBase64(chunks, ctx.sampleRate);
+    } finally {
+      try { stream.getTracks().forEach(t => t.stop()); } catch (_) {}
+      try { await ctx.close(); } catch (_) {}
+    }
+  }
+
+  _encodeWavBase64(chunks, sampleRate) {
+    // Flatten, downsample to 16 kHz, encode 16-bit PCM mono WAV.
+    let total = 0; chunks.forEach(c => total += c.length);
+    const flat = new Float32Array(total);
+    let o = 0; chunks.forEach(c => { flat.set(c, o); o += c.length; });
+    const target = 16000;
+    const ratio = sampleRate / target;
+    const outLen = Math.floor(flat.length / ratio);
+    const pcm = new Int16Array(outLen);
+    for (let i = 0; i < outLen; i++) {
+      const s = Math.max(-1, Math.min(1, flat[Math.floor(i * ratio)] || 0));
+      pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+    }
+    const buf = new ArrayBuffer(44 + pcm.length * 2);
+    const dv = new DataView(buf);
+    const wr = (off, str) => { for (let i = 0; i < str.length; i++) dv.setUint8(off + i, str.charCodeAt(i)); };
+    wr(0, "RIFF"); dv.setUint32(4, 36 + pcm.length * 2, true); wr(8, "WAVE");
+    wr(12, "fmt "); dv.setUint32(16, 16, true); dv.setUint16(20, 1, true);
+    dv.setUint16(22, 1, true); dv.setUint32(24, target, true);
+    dv.setUint32(28, target * 2, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+    wr(36, "data"); dv.setUint32(40, pcm.length * 2, true);
+    for (let i = 0; i < pcm.length; i++) dv.setInt16(44 + i * 2, pcm[i], true);
+    let bin = ""; const bytes = new Uint8Array(buf);
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return "data:audio/wav;base64," + btoa(bin);
   }
 
   _renderFaces() {
@@ -11442,6 +11618,16 @@ ${this._renderExcludedEntities(d)}
   .faces-llm-row label { font-size: 12px; color: var(--text, #cfe); display: flex; align-items: center; gap: 6px; }
   .faces-exp { font-size: 8px; letter-spacing: .08em; padding: 1px 5px; border-radius: 6px; background: rgba(170,120,230,.22); color: var(--purple, #b488e6); font-family: var(--font-mono); }
   .faces-llm-note { margin-bottom: 4px; }
+  .voices-status { font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); margin-bottom: 8px; }
+  .voices-ok { color: var(--green, #6ad28f); }
+  .voices-off { color: var(--text-dim); }
+  .voices-guess { color: var(--purple, #b488e6); }
+  .voices-row { display: flex; align-items: center; gap: 10px; padding: 5px 0; border-bottom: 1px solid var(--border, rgba(255,255,255,.07)); }
+  .voices-name { flex: 1; font-size: 13px; color: var(--text, #cfe); }
+  .voices-meta { font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); }
+  .voices-forget { padding: 2px 8px; }
+  .voices-enroll { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+  .voices-enroll .voices-name-input { flex: 1; min-width: 140px; }
   .faces-card-ref { margin-top: 4px; }
   .faces-ref { display: inline-block; font-size: 10px; padding: 3px 8px; border-radius: 6px; border: 1px dashed var(--border, rgba(255,255,255,.2)); color: var(--text-dim); cursor: pointer; }
   .faces-ref.set { border-style: solid; color: var(--text, #cfe); }
