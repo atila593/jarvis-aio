@@ -1,3 +1,46 @@
+## [9.24.0] — Issue #400: observer/quiet-hours/TTS/bootstrap fixes
+
+Addresses every item of the 10-point report in issue #400. The bug fixes change
+behaviour on a default install for the better; the new *options* are opt-in and
+default to the previous behaviour (except where the previous behaviour was the
+bug — the arrival greeting and interactive questions now do the right thing out
+of the box).
+
+- **Excluded entities never reach cognition (#1).** The observer now applies
+  entity/domain/label exclusions *before* the cognition pass, so an excluded
+  noisy sensor can no longer be re-admitted and escalated by a cognition anomaly.
+- **Appliance monitor honours exclusions live (#2).** It checks `is_excluded`
+  per event instead of only at startup — adding a sensor to the exclusions takes
+  effect without an HA restart.
+- **Welcome-home greeting respects quiet hours (#3).** It no longer fires during
+  quiet hours, requires a minimum time away (default 10 min, so a brief Wi-Fi
+  dropout isn't an "arrival"), and has an off switch (`arrival_greeting_enabled`,
+  `arrival_min_away_minutes`).
+- **Quiet-hours phone-push flood (#4).** New opt-in `quiet_hours_push_critical_only`
+  suppresses phone pushes below `critical` while quiet hours are active, and a
+  new **presence-only** class (`presence_only_entities`) keeps an entity visible
+  to room presence/routing while never escalating or announcing it — so indoor
+  motion can drive presence without flooding the phone at night.
+- **Chosen TTS voice applies on every engine (#5).** Observer, `jarvis.speak`
+  and announcements now attach the resolved voice (+ language for non-Piper) on
+  every path, not just Piper; with `tts_use_ha_voice` on they follow the Assist
+  pipeline's voice.
+- **Proactive questions can be answered (#6).** A proactive message ending in
+  "?" opens the mic via `assist_satellite.start_conversation` on the satellite
+  nearest the target speaker (same device, then same area), falling back to plain
+  TTS. Toggle: `proactive_questions_interactive` (default on).
+- **Pipeline agent no longer hijacked (#7).** `async_ensure_pipeline_agent` only
+  claims a pipeline with no agent or HA's default — a deliberately-reassigned
+  conversation agent is left alone.
+- **Honorific (#8).** A blank honorific persists instead of snapping back to
+  "sir", and a new output tidier drops the honorific *and its stray comma*
+  cleanly from spoken/notified text when it's empty.
+- **Bootstrap remembers removed add-ons (#9).** An add-on JARVIS installed and
+  the owner later removed is not reinstalled on a version bump (tracked in a
+  persisted `managed_addons` set).
+- **Minor (#10).** `review_enabled` is now settable from the panel; the delivery
+  presence-parity log is DEBUG instead of a WARNING every ~15 minutes.
+
 ## [9.23.0] — In-process vocal biometrics (Path B, Steps 2–5)
 
 Builds the rest of in-process speaker identification on top of 9.22.0's engine —

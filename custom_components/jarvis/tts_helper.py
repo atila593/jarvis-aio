@@ -185,6 +185,66 @@ def _pick_jarvis_voice(runtime_configs, is_piper: bool) -> Optional[str]:
     return f"en_GB-jarvis-{voice_quality}"
 
 
+def _preferred_pipeline_voice(hass, tts_entity):
+    """(voice, language) from an Assist pipeline that speaks through
+    ``tts_entity``, else (None, None). Best-effort and HA-version tolerant."""
+    try:
+        from homeassistant.components import assist_pipeline
+        getter = getattr(assist_pipeline, "async_get_pipelines", None)
+        pipelines = list(getter(hass)) if getter else []
+        for p in pipelines:   # prefer the pipeline using this exact engine
+            if getattr(p, "tts_engine", None) == tts_entity and getattr(p, "tts_voice", None):
+                return p.tts_voice, getattr(p, "tts_language", None)
+        for p in pipelines:   # else any pipeline that names a voice
+            if getattr(p, "tts_voice", None):
+                return p.tts_voice, getattr(p, "tts_language", None)
+    except Exception:
+        pass
+    return None, None
+
+
+def voice_options(hass, tts_entity, runtime_configs=None) -> dict:
+    """The ``options`` dict to attach to ``tts.speak`` so JARVIS speaks in the
+    chosen voice on EVERY speech path — chat, observer, and ``jarvis.speak`` —
+    not only Piper (issue #400). ``{}`` means "accept the engine default".
+
+    Piper (unless ``tts_use_ha_voice``) → the ``en_GB-jarvis`` voice at the
+    configured quality. Otherwise (a non-Piper engine, or ``tts_use_ha_voice``
+    on) → an explicit ``tts_voice``/``tts_language`` from config if set, else the
+    voice+language of the Assist pipeline that uses this engine."""
+    if not tts_entity:
+        return {}
+    if runtime_configs is None:
+        try:
+            from .const import DOMAIN
+            runtime_configs = [
+                (_ed.get("runtime_config") or {})
+                for _ed in (hass.data.get(DOMAIN) or {}).values()
+                if isinstance(_ed, dict)
+            ]
+        except Exception:
+            runtime_configs = []
+    is_piper = "piper" in tts_entity.lower()
+    jarvis_voice = _pick_jarvis_voice(runtime_configs, is_piper)
+    if jarvis_voice:
+        return {"voice": jarvis_voice}
+    voice = language = None
+    for rc in runtime_configs or []:
+        if isinstance(rc, dict):
+            voice = rc.get("tts_voice") or voice
+            language = rc.get("tts_language") or language
+    if not voice:
+        voice, language = _preferred_pipeline_voice(hass, tts_entity)
+    opts: dict = {}
+    if voice:
+        opts["voice"] = voice
+        # A language hint can push some Piper/Wyoming builds onto a default
+        # voice, so only pass language for non-Piper engines.
+        if language and not is_piper:
+            opts["language"] = language
+    return opts
+
+
 async def async_announce(
     hass: HomeAssistant,
     text: str,
@@ -224,6 +284,14 @@ async def async_announce(
     if not text or not tts_entity or not speakers:
         return False
 
+    # Tidy address-comma artifacts left by a blank honorific (#400 #8). No-op on
+    # well-formed text, so it is safe on every announcement.
+    try:
+        from .text_tidy import tidy_address
+        text = tidy_address(text)
+    except Exception:
+        pass
+
     # Final safety net: never speak through a TV/movie player, whatever routing
     # produced this list. Logs (with context) if it has to drop one.
     try:
@@ -251,22 +319,21 @@ async def async_announce(
         ]
     except Exception:
         _rcs = []
-    jarvis_voice = _pick_jarvis_voice(_rcs, is_piper)
+    # The voice/engine options for this speech path — the JARVIS Piper voice, or
+    # (non-Piper / tts_use_ha_voice) the configured or pipeline voice+language,
+    # so every path speaks in the chosen voice, not just Piper (issue #400).
+    opts = voice_options(hass, tts_entity, _rcs)
 
     service_data = {
         "media_player_entity_id": list(speakers),
         "message": text,
         "cache": True,
     }
-    if jarvis_voice:
-        # No `language`/`length_scale` keys: this Piper build rejects length_scale
-        # ("Invalid options found") before any audio plays. If the voice isn't
-        # installed (VoiceNotFoundError), the per-speaker fallback below retries
-        # without it and uses the engine's default voice, so a missing custom
-        # voice is never fatal.
-        service_data["options"] = {
-            "voice": jarvis_voice,
-        }
+    if opts:
+        # If the voice isn't installed (VoiceNotFoundError), the per-speaker
+        # fallback below retries without it and uses the engine's default voice,
+        # so a missing custom voice is never fatal.
+        service_data["options"] = opts
 
     try:
         await hass.services.async_call(

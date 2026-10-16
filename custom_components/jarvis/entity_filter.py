@@ -124,6 +124,43 @@ def is_excluded(hass: HomeAssistant, entity_id: Optional[str]) -> bool:
     return False
 
 
+def _presence_only_config(hass: HomeAssistant) -> set[str]:
+    """The set of ``presence_only_entities`` from runtime_config."""
+    out: set[str] = set()
+    try:
+        for entry_data in (hass.data.get(DOMAIN) or {}).values():
+            if not isinstance(entry_data, dict):
+                continue
+            rc = entry_data.get("runtime_config") or {}
+            vals = _as_list(rc.get("presence_only_entities"))
+            if vals:
+                for e in vals:
+                    if e:
+                        out.add(str(e))
+                break
+    except Exception:
+        pass
+    return out
+
+
+def is_presence_only(hass: HomeAssistant, entity_id: Optional[str]) -> bool:
+    """True when the owner marked this entity "presence only" (#400 #4).
+
+    A presence-only entity is still fully visible to JARVIS's presence / room
+    routing (unlike an *excluded* entity, which disappears everywhere), but it is
+    never escalated, learned-from, or announced by the observer. This lets a busy
+    house keep indoor motion sensors driving room presence without those sensors
+    generating a stream of night-time ``high`` events / phone pushes — the exact
+    trade-off the reporter was forced to make by excluding them outright.
+
+    Cheap and hot-path safe: a single runtime_config read (entity-id match only).
+    """
+    if not entity_id:
+        return False
+    pset = _presence_only_config(hass)
+    return bool(pset) and entity_id in pset
+
+
 # ── Camera object-class sensors: person vs. not-a-person (#254) ───────────────
 #
 # Frigate (and ONVIF analytics) expose, per camera and per detected object

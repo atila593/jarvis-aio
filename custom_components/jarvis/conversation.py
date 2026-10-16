@@ -954,6 +954,11 @@ class JarvisAgent(conversation.ConversationEntity):
         if offer_reply is not None:
             # Short-circuit: deliver the offer response directly.
             offer_reply = offer_reply.replace("{honorific}", honorific)
+            try:
+                from .text_tidy import tidy_address
+                offer_reply = tidy_address(offer_reply)
+            except Exception:
+                pass
             ir = intent.IntentResponse(language=user_input.language)
             ir.async_set_speech(offer_reply)
             return conversation.ConversationResult(response=ir, conversation_id=cid)
@@ -1084,6 +1089,12 @@ class JarvisAgent(conversation.ConversationEntity):
                                 f"report status while I reconnect."
                             )
             response_text = response_text.replace("{honorific}", honorific)
+            # Tidy address-comma artifacts left by a blank honorific (#400 #8).
+            try:
+                from .text_tidy import tidy_address
+                response_text = tidy_address(response_text)
+            except Exception:
+                pass
 
             # v5.7.01: Record the winning response so duplicate pipelines
             # arriving slightly later will get caught by dedup

@@ -110,6 +110,41 @@ def satellites_in_area(hass: HomeAssistant, area_id: str) -> list[str]:
     ]
 
 
+def satellite_for_speaker(
+    hass: HomeAssistant, speaker_entity_id: Optional[str]
+) -> Optional[str]:
+    """The best assist_satellite to open the mic through for a given target
+    speaker (#400 #6) — the satellite on the SAME device as the speaker first,
+    then any satellite in the SAME area, else None.
+
+    Lets a proactive *question* ("Shall I turn the tablet screen off?") open the
+    mic on the device nearest the speaker it would have been spoken through, so
+    the owner can actually answer it."""
+    if not speaker_entity_id:
+        return None
+    # An assist_satellite target can answer for itself.
+    if str(speaker_entity_id).startswith("assist_satellite."):
+        return speaker_entity_id
+    try:
+        dev_id = _mp_device_id(hass, speaker_entity_id)
+        if dev_id:
+            for e in _entities_by_domain(hass, "assist_satellite"):
+                ent = er.async_get(hass).async_get(e)
+                if ent is not None and ent.device_id == dev_id:
+                    return e
+    except Exception:
+        pass
+    try:
+        area = entity_area(hass, speaker_entity_id)
+        if area:
+            sats = satellites_in_area(hass, area)
+            if sats:
+                return sats[0]
+    except Exception:
+        pass
+    return None
+
+
 def speakers_in_area(hass: HomeAssistant, area_id: str) -> list[str]:
     """Audio-capable media_players in the area, for routing TTS / announcements.
 

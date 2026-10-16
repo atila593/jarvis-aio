@@ -69,8 +69,10 @@ def test_parity_logs_divergence(ds, caplog):
     h = FakeHass()
     # kernel has an open episode but legacy says no package → divergence logged.
     mod.mirror_delivery_sync(h, "camera.porch", "delivered", 1)
-    with caplog.at_level(logging.WARNING,
-                         logger="custom_components.jarvis.delivery_situation"):
+    # #400 #10: the parity divergence is a DEBUG diagnostic now (it fired every
+    # camera poll and flooded the log at WARNING). Set the root level to DEBUG so
+    # the module logger (NOTSET → inherits root) actually emits it.
+    with caplog.at_level(logging.DEBUG):
         mod.record_presence_parity(h, "camera.porch", legacy_present=False)
     assert mod._last_presence_parity["agree"] is False
     assert any("presence parity DIVERGENCE" in r.message for r in caplog.records)

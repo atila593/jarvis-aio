@@ -144,6 +144,36 @@ def _anyone_home(hass) -> bool:
     return False
 
 
+def _arrival_greeting_allowed(hass, config, old_state, new_state) -> bool:
+    """Gate the welcome-home greeting (issue #400): honour an off-switch, a
+    minimum time-away so a brief Wi-Fi dropout isn't treated as an 'arrival',
+    and quiet hours (no spoken greeting overnight — the previous gate only fired
+    when sleep *detection* saw someone in a bedroom, so homes without a bedroom
+    sensor got greeted at 05:52). Never blocks on an error."""
+    try:
+        if not config.get("arrival_greeting_enabled", True):
+            return False
+        try:
+            min_away = float(config.get("arrival_min_away_minutes", 10) or 0)
+        except (TypeError, ValueError):
+            min_away = 10.0
+        if min_away > 0 and old_state is not None:
+            try:
+                away_s = (new_state.last_changed - old_state.last_changed).total_seconds()
+                if 0 <= away_s < min_away * 60:
+                    return False
+            except Exception:
+                pass
+        from . import sleep_detection
+        if sleep_detection._in_quiet_hours(
+                config.get("observer_quiet_start", "22:00"),
+                config.get("observer_quiet_end", "07:00")):
+            return False
+    except Exception:
+        return True
+    return True
+
+
 @callback
 def _on_state_changed(event: Event) -> None:
     """Watch for person arrivals and security event accumulation."""
@@ -161,6 +191,9 @@ def _on_state_changed(event: Event) -> None:
         old_val = old_state.state if old_state else "unknown"
         new_val = new_state.state
         if old_val != "home" and new_val == "home":
+            if not _arrival_greeting_allowed(
+                    _STATE.hass, _STATE.config, old_state, new_state):
+                return
             now = time.time()
             if (now - _STATE.last_arrival_briefing) > ARRIVAL_COOLDOWN * 60:
                 _STATE.last_arrival_briefing = now

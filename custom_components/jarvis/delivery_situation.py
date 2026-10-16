@@ -118,7 +118,9 @@ def record_presence_parity(hass, entity_id: str, legacy_present: bool,
         _LOGGER.debug("delivery presence parity OK: %s (camera %s)",
                       legacy_present, entity_id)
     else:
-        _LOGGER.warning(
+        # DEBUG, not WARNING: a parity diagnostic that fired on every camera poll
+        # (~every 15 min) and flooded the log for no fault (#400 #10).
+        _LOGGER.debug(
             "delivery presence parity DIVERGENCE: legacy=%s kernel=%s (camera %s)",
             bool(legacy_present), kernel_present, entity_id)
 
