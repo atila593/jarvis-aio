@@ -111,7 +111,7 @@ def _prewarm_persisted_state() -> None:
     except Exception:
         pass
 
-PLATFORMS = ["conversation"]
+PLATFORMS = ["conversation", "stt"]
 # Config-entry only (v6.45.0): warns users who still have `jarvis:` in YAML.
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 

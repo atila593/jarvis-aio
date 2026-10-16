@@ -51,6 +51,53 @@ _NO_SPEAKER = ("", "unknown", "unavailable", "none", "no_speaker",
 _RECENCY_WINDOW = 20.0  # seconds; a current-speaker sensor older than this is stale
 _SCORE_ATTRS = ("confidence", "score", "probability", "similarity")
 
+# ── in-process speaker ID (Path B) ───────────────────────────────────────────
+# The STT tee (stt.py) embeds each utterance and publishes the latest match
+# here. The EXTERNAL source (a dedicated service) always wins; this in-process
+# result is only consulted when no external source is configured/active and
+# `voice_recognition_local` is on. Crucially, only a *trusted* match (high
+# similarity AND enough enrolled samples — see speaker_id) is ever returned to
+# the identity voice tier; a weaker *guess* is panel-only and can never stand an
+# intrusion alert down. Resets to empty on restart (in-memory, best-effort).
+_LOCAL_WINDOW = 20.0
+_local_speaker: dict = {"match": None, "ts": 0.0}
+
+
+def note_local_speaker(match: Optional[dict]) -> None:
+    """Record the latest in-process speaker-ID result (from the STT tee). Pass
+    None to clear. Cheap, never raises."""
+    try:
+        _local_speaker["match"] = match if isinstance(match, dict) else None
+        _local_speaker["ts"] = time.time()
+    except Exception:
+        pass
+
+
+def current_local_speaker() -> Optional[dict]:
+    """The latest in-process match within the recency window (guess or trusted),
+    for the Voices panel's 'who's speaking' readout. None if stale/absent."""
+    m = _local_speaker.get("match")
+    if not m:
+        return None
+    if time.time() - float(_local_speaker.get("ts", 0.0)) > _LOCAL_WINDOW:
+        return None
+    return m
+
+
+def identify_local(hass: HomeAssistant, device_id: Optional[str] = None) -> dict:
+    """In-process voice vote for the identity voice tier: the latest *trusted*
+    match, as ``{person: score}``. A guess is withheld (panel-only), so the
+    strongest identity tier is never fed an unreliable in-process result."""
+    if not bool(_cfg("voice_recognition_local", False)):
+        return {}
+    m = current_local_speaker()
+    if not m or not m.get("trusted") or not m.get("name"):
+        return {}
+    try:
+        return {m["name"]: float(m.get("score", 0.0)) / 100.0}
+    except Exception:
+        return {}
+
 
 def _cfg(key: str, default):
     try:
@@ -119,7 +166,9 @@ def identify(hass: HomeAssistant, device_id: Optional[str] = None) -> dict:
     identified. Registered into identity's voice tier."""
     src = (_cfg("voice_recognition_source", "") or "").strip()
     if not src:
-        return {}
+        # No external speaker-ID service — fall back to JARVIS's own in-process
+        # result if that's enabled (Path B). Trusted matches only.
+        return identify_local(hass, device_id)
     conf = float(_cfg("voice_recognition_confidence", 0.85))
 
     # Per-person sensors (ON while that person is speaking) — inherently current.
