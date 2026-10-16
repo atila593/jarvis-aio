@@ -380,7 +380,9 @@ async def _evaluate_locked(hass, groq_client, honorific, tts_entity, speakers,
     if DELIVERY_SITUATION_ENFORCE and kernel_present is not None:
         prev_present = kernel_present
         if kernel_present != legacy_present:
-            _LOGGER.warning(
+            # DEBUG, not WARNING: this is an expected parity/enforce diagnostic,
+            # not a fault — it fired on every poll and flooded the log (#400 #10).
+            _LOGGER.debug(
                 "delivery presence ENFORCE: kernel view=%s overrides legacy=%s "
                 "(camera %s)", kernel_present, legacy_present, entity_id)
     else:

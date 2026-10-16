@@ -744,6 +744,16 @@ def _on_state_changed(event: Event) -> None:
     if new_state is None:
         return
 
+    # Honour user exclusions live (issue #400): a sensor added to the exclusion
+    # list stops being tracked immediately, instead of lingering until a restart
+    # rebuilds the tracked set.
+    try:
+        from .entity_filter import is_excluded
+        if is_excluded(_MON.hass, entity_id):
+            return
+    except Exception:
+        pass
+
     # ── Native appliance status change ──────────────────────────────
     if entity_id in _MON.natives:
         native = _MON.natives[entity_id]

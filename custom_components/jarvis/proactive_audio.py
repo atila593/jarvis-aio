@@ -292,6 +292,52 @@ def _resolve_honorific(hass: HomeAssistant, entry: ConfigEntry) -> str:
     return jarvis_config.runtime_get(hass, entry, CONF_HONORIFIC, DEFAULT_HONORIFIC)
 
 
+def _questions_interactive() -> bool:
+    """Whether a proactive *question* should open the mic for an answer instead
+    of only playing audio (#400 #6). Default ON — it degrades safely to plain
+    ``tts.speak`` whenever no satellite can be resolved, so nothing is ever lost.
+    """
+    try:
+        from . import jarvis_config
+        return bool(jarvis_config.get("proactive_questions_interactive", True))
+    except Exception:
+        return True
+
+
+def _is_question(message: str) -> bool:
+    """A message JARVIS expects an answer to — ends with '?' (ignoring trailing
+    quotes/whitespace)."""
+    return bool(message) and message.rstrip().rstrip("\"'”’").endswith("?")
+
+
+async def _try_interactive_question(
+    hass: HomeAssistant, targets: list[str], message: str
+) -> bool:
+    """Open the mic on the satellite nearest a target speaker and speak the
+    question there via ``assist_satellite.start_conversation``, so the owner can
+    actually answer. Returns True if a satellite was found AND the call
+    succeeded; False means the caller should fall back to plain TTS."""
+    sat = None
+    for tgt in targets or []:
+        sat = audio_routing.satellite_for_speaker(hass, tgt)
+        if sat:
+            break
+    if not sat:
+        return False
+    try:
+        await hass.services.async_call(
+            "assist_satellite", "start_conversation",
+            {"entity_id": sat, "start_message": message}, blocking=True,
+        )
+        _LOGGER.debug("jarvis.speak: asked question via satellite %s", sat)
+        return True
+    except Exception as exc:  # noqa: BLE001 - fall back to plain TTS
+        _LOGGER.debug(
+            "jarvis.speak: satellite start_conversation on %s failed (%s); "
+            "falling back to tts.speak", sat, exc)
+        return False
+
+
 def _resolve_tts_entity(hass: HomeAssistant) -> str:
     """Prefer a panel-configured TTS entity (runtime_config), else the default."""
     for data in hass.data.get(DOMAIN, {}).values():
@@ -541,14 +587,29 @@ async def _speak_tts(
         _LOGGER.warning("JARVIS: display-target filter failed (proactive TTS may reach a screen): %s", exc)
     if not targets:
         return
+    # Tidy address-comma artifacts left by a blank honorific (#400 #8).
+    try:
+        from .text_tidy import tidy_address
+        message = tidy_address(message)
+    except Exception:
+        pass
+    tts_entity = _resolve_tts_entity(hass)
     payload = {
-        "entity_id": _resolve_tts_entity(hass),
+        "entity_id": tts_entity,
         "media_player_entity_id": targets,
         "message": message,
     }
+    # Merge the configured JARVIS voice so jarvis.speak uses it on every engine,
+    # not just the engine default (issue #400).
+    options = dict(_tts_options(profile) or {})
+    try:
+        from .tts_helper import voice_options
+        options.update(voice_options(hass, tts_entity))
+    except Exception:
+        pass
     try:
         await hass.services.async_call(
-            "tts", "speak", {**payload, "options": _tts_options(profile)}, blocking=True
+            "tts", "speak", {**payload, "options": options}, blocking=True
         )
     except (vol.Invalid, HomeAssistantError):
         _LOGGER.debug("TTS rejected options; retrying without them")
@@ -572,6 +633,14 @@ async def _announce(hass: HomeAssistant, message: str, area_id: str, critical: b
             "no broadcast/default fallback) — nothing to announce on", area_id,
         )
         return
+
+    # A proactive *question* should let the owner answer: open the mic on the
+    # satellite nearest the target speaker via start_conversation (#400 #6). A
+    # critical alert is never turned into a question prompt, and anything that
+    # can't resolve a satellite falls through to the normal spoken announcement.
+    if not critical and _questions_interactive() and _is_question(message):
+        if await _try_interactive_question(hass, targets, message):
+            return
 
     telemetry = _build_telemetry(hass, area_id, targets, critical)
     profile = _PROSODY.calculate_vocal_profile(telemetry)

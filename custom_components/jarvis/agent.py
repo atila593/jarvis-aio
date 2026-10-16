@@ -2837,7 +2837,11 @@ async def _exec_look_at_camera(hass: HomeAssistant, args: dict) -> str:
         return json.dumps({"error": "entity_id and question are required"})
     try:
         from . import jarvis_config
-        honorific = jarvis_config.get("honorific", "sir") or "sir"
+        # Preserve an explicitly-blank honorific (owner wants no address); only
+        # fall back to "sir" when truly unset/None (#400 #8).
+        honorific = jarvis_config.get("honorific", "sir")
+        if honorific is None:
+            honorific = "sir"
         prompt = (
             f"Answer this question about what you see, concisely and factually: "
             f"{question} If the thing asked about is present, say so and briefly "
@@ -3768,7 +3772,11 @@ def _empty_reply_fallback(config) -> str:
     shows a blank turn / "(JARVIS returned no text.)". Honours the household
     honorific; never raises."""
     try:
-        hon = (config.get("honorific", "sir") if isinstance(config, dict) else "sir") or "sir"
+        # Preserve an explicitly-blank honorific; fall back to "sir" only when
+        # unset/None (#400 #8).
+        hon = config.get("honorific", "sir") if isinstance(config, dict) else "sir"
+        if hon is None:
+            hon = "sir"
     except Exception:
         hon = "sir"
     return f"I'm not sure I caught that, {hon} — could you put it another way?"

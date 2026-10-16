@@ -63,9 +63,9 @@ async def test_enforce_kernel_is_authoritative_on_divergence(env, caplog):
     assert mgr.open_situations("delivery") == []
     assert pm._STATE["camera.porch"]["package"] is True   # legacy still present
     # Under enforce the kernel view (False) wins → the transition re-fires and a
-    # NEW episode opens, and the override is logged.
-    with caplog.at_level(logging.WARNING,
-                         logger="custom_components.jarvis.package_monitor"):
+    # NEW episode opens, and the override is logged (DEBUG now — #400 #10). Set
+    # the root level to DEBUG so the module logger actually emits it.
+    with caplog.at_level(logging.DEBUG):
         await _deliver(pm, h)
     assert len(mgr.open_situations("delivery")) == 1       # kernel drove a re-delivery
     assert any("ENFORCE: kernel view" in r.message for r in caplog.records)

@@ -2338,6 +2338,17 @@ dotLabel.textContent = lightBtn.classList.contains("adl")
     vision: { key: 'vision_thinking_enabled', default: false, tokenKey: 'vision_thinking_max_tokens', tokenDefault: 1024 },
   };
 
+  // Review enable/disable toggle (#400 #10): the Review role can now be turned
+  // on/off straight from the panel instead of only through the options flow.
+  _reviewToggleRow(cfg) {
+    const on = !!(cfg && cfg.review_enabled);
+    return `
+      <div class="model-hint model-thinking-row">
+        <span>Second-opinion review</span>
+        <button class="toggle-btn ${on ? 'on' : 'off'}" data-cfg-key="review_enabled" data-cfg-val="${on ? 'false' : 'true'}">${on ? 'ON' : 'OFF'}</button>
+      </div>`;
+  }
+
   _thinkingToggleRow(cfg, role) {
     const spec = this._THINKING_ROLES[role];
     if (!spec) return '';
@@ -2393,6 +2404,7 @@ dotLabel.textContent = lightBtn.classList.contains("adl")
           <input class="model-custom" data-role="${r.role}" data-cfg-key="${r.modelKey}"
                  type="text" placeholder="enter model id" value="${this._esc(curModel)}" />
           ${r.role === 'vision' ? `<div class="model-hint">Needs an image-capable model — e.g. moondream on Ollama, or a Groq vision model. Text-only models (like gpt-oss) will fail on camera analysis.</div>` : ''}
+          ${r.role === 'review' ? this._reviewToggleRow(cfg) : ''}
           ${this._thinkingToggleRow(cfg, r.role)}
         </div>`;
     }).join('');

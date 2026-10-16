@@ -310,7 +310,11 @@ async def _create_pipeline(hass: HomeAssistant, voice_quality: str) -> bool:
             # file is absent, so a deliberate voice choice is never clobbered.
             try:
                 updates = {}
-                if getattr(existing, "conversation_engine", None) != agent:
+                cur_engine = getattr(existing, "conversation_engine", None)
+                # Only (re)claim the agent when it is unset or on HA's default —
+                # never override a deliberately-reassigned agent (issue #400 #7).
+                if cur_engine != agent and cur_engine in (
+                        None, "", "conversation.home_assistant", "homeassistant"):
                     updates["conversation_engine"] = agent
                 cur_voice = (getattr(existing, "tts_voice", "") or "")
                 if cur_voice.startswith("en_GB-jarvis-") and cur_voice != tts_voice:
@@ -425,12 +429,36 @@ async def async_run_bootstrap(hass: HomeAssistant, *, force: bool = False) -> di
 
     _LOGGER.info("JARVIS bootstrap: starting (version=%s quality=%s)", version, voice_quality)
 
-    # Phase 1 — prerequisite add-ons
+    # Phase 1 — prerequisite add-ons.
+    # Remember which add-ons JARVIS has installed (``managed_addons``, persisted).
+    # If one JARVIS previously installed is now gone, the owner removed it on
+    # purpose (e.g. they use cloud STT and dropped Whisper) — respect that and do
+    # NOT reinstall it on a version bump (#400 #9). First-time installs and
+    # add-ons the owner reinstalls themselves are still handled.
+    managed = set(jarvis_config.get("managed_addons", []) or [])
+    new_managed = set(managed)
     addons_ok = True
     for slug, friendly in REQUIRED_ADDONS.items():
-        if not await _ensure_addon(hass, slug, friendly):
+        info = await _addon_info(hass, slug)
+        installed = bool(info and info.get("version"))
+        if not installed and slug in managed:
+            # Keep the slug in ``managed`` so the removal keeps being respected on
+            # every future bump — don't drop it, or it would reinstall next time.
+            _LOGGER.info(
+                "JARVIS bootstrap: %s was removed by the owner; not reinstalling",
+                friendly)
+            continue
+        if await _ensure_addon(hass, slug, friendly):
+            new_managed.add(slug)
+        else:
             addons_ok = False
     status["addons_ok"] = addons_ok
+    if new_managed != managed:
+        try:
+            await hass.async_add_executor_job(
+                jarvis_config.set_many, {"managed_addons": sorted(new_managed)})
+        except Exception as exc:
+            _LOGGER.debug("JARVIS bootstrap: couldn't persist managed_addons: %s", exc)
 
     # Phase 2 — voice model
     if tts_provider == "piper_jarvis":
@@ -495,7 +523,17 @@ async def async_ensure_pipeline_agent(hass: HomeAssistant) -> None:
         voice = (getattr(p, "tts_voice", "") or "").lower()
         if "jarvis" not in name and "jarvis" not in voice:
             continue
-        if getattr(p, "conversation_engine", None) == agent:
+        cur_engine = getattr(p, "conversation_engine", None)
+        if cur_engine == agent:
+            continue
+        # Respect a deliberately-reassigned conversation agent (issue #400 #7).
+        # Only claim a pipeline that is unset or still on HA's default agent — if
+        # the user pointed it at a specific LLM/agent, leave it alone instead of
+        # hijacking it back to JARVIS on every start.
+        if cur_engine not in (None, "", "conversation.home_assistant", "homeassistant"):
+            _LOGGER.debug(
+                "JARVIS: leaving pipeline '%s' on its chosen agent %s (not JARVIS)",
+                getattr(p, "name", "?"), cur_engine)
             continue
         try:
             await assist_pipeline.async_update_pipeline(

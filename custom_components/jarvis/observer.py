@@ -540,6 +540,23 @@ def _on_state_changed(event: Event) -> None:
     # get spoken. This keeps the activity feed populated for observability.
     # The speak gate is in _process_event, after classification.
 
+    # Hard user exclusion (issue #400): entity/domain/label exclusions apply
+    # BEFORE cognition, so an excluded entity is never learned or escalated and a
+    # cognition "anomaly" can no longer re-admit it. This is the one gate the
+    # additive-cognition rule below must not be able to override.
+    try:
+        from .entity_filter import is_excluded, is_presence_only
+        _eid = event.data.get("entity_id", "")
+        if _STATE.hass is not None and is_excluded(_STATE.hass, _eid):
+            return
+        # Presence-only entities (#400 #4) stay visible to presence/routing but
+        # are never escalated, learned-from, or announced — so indoor motion can
+        # drive room presence without flooding the owner at night.
+        if _STATE.hass is not None and is_presence_only(_STATE.hass, _eid):
+            return
+    except Exception:
+        pass
+
     # Local cognition observes EVERY event (learning + triage) at zero cloud
     # cost. Its decision is ADDITIVE: it can only elevate an anomaly the static
     # filter would have dropped — it never suppresses what the filter escalates.
@@ -835,6 +852,13 @@ async def _process_event(event: Event) -> None:
                     jarvis_log("GATE", f"quiet hours — holding {final_urgency} announcement (not critical)")
                 except Exception:
                     pass
+            # #400 #4: when the owner has opted into "push only critical during
+            # quiet hours", drop the phone push for everything below critical so a
+            # busy house's high-rated indoor motion stops flooding the phone at
+            # night. The event is still recorded in the activity feed.
+            quiet_push_block = (
+                in_quiet_hours and final_urgency != "critical"
+                and _quiet_push_critical_only())
             targets, mode = audio_routing.observer_speak_target(
                 _STATE.hass,
                 urgency=final_urgency,
@@ -857,8 +881,13 @@ async def _process_event(event: Event) -> None:
                 return
 
             if mode == "notify_only":
-                _LOGGER.info("Observer notify-only '%s'", message)
-                await _send_notification(message, urgency=final_urgency)
+                if quiet_push_block:
+                    _LOGGER.info(
+                        "Observer quiet-hours push suppressed (%s, not critical) '%s'",
+                        final_urgency, message[:80])
+                else:
+                    _LOGGER.info("Observer notify-only '%s'", message)
+                    await _send_notification(message, urgency=final_urgency)
                 await output_gate.async_record_announcement(_STATE.hass,
                     entity_id=entity_id, category=category,
                     urgency=final_urgency, message=message, was_spoken=False,
@@ -888,7 +917,7 @@ async def _process_event(event: Event) -> None:
                 recorded = True
                 # v5.6.2: Still push phone notification for high/critical
                 # even when announcements (voice) are disabled
-                if final_urgency in ("high", "critical"):
+                if final_urgency in ("high", "critical") and not quiet_push_block:
                     await _send_notification(message, urgency=final_urgency)
                 return
 
@@ -905,8 +934,9 @@ async def _process_event(event: Event) -> None:
             if not recorded:
                 await output_gate.release_reservation(_STATE.hass, token)
 
-        # Additionally push phone for high/critical
-        if final_urgency in ("high", "critical"):
+        # Additionally push phone for high/critical (unless quiet-hours push
+        # suppression is on and this isn't critical — #400 #4).
+        if final_urgency in ("high", "critical") and not quiet_push_block:
             await _send_notification(message, urgency=final_urgency)
 
     except Exception as exc:
@@ -932,6 +962,25 @@ def _is_announcements_enabled() -> bool:
                 return bool(rc["announcements_enabled"])
     # Fall back to _STATE.config (from addon config / entry options)
     return bool((_STATE.config or {}).get("announcements_enabled", True))
+
+
+def _quiet_push_critical_only() -> bool:
+    """During quiet hours, suppress phone pushes for anything below ``critical``?
+
+    Opt-in (default OFF so existing behaviour is unchanged). Addresses the
+    night-time push flood (#400 #4): a busy house rates indoor motion ``high``
+    after the quiet-hours start, and ``high`` is routed to ``notify_only`` →
+    phone. With this on, only ``critical`` pushes while quiet hours are active.
+    runtime_config (panel) first, then addon/entry config."""
+    from .const import DOMAIN
+    hass = _STATE.hass
+    if hass:
+        for _eid, data in hass.data.get(DOMAIN, {}).items():
+            if isinstance(data, dict):
+                rc = data.get("runtime_config", {})
+                if "quiet_hours_push_critical_only" in rc:
+                    return bool(rc["quiet_hours_push_critical_only"])
+    return bool((_STATE.config or {}).get("quiet_hours_push_critical_only", False))
 
 
 def _get_announcement_speakers() -> list[str] | None:
@@ -971,6 +1020,12 @@ async def _speak(message: str, *, targets: list[str]) -> None:
         _LOGGER.warning("JARVIS: display-target filter failed (observer TTS may reach a screen): %s", exc)
     if not targets:
         return
+    # Tidy address-comma artifacts left by a blank honorific (#400 #8).
+    try:
+        from .text_tidy import tidy_address
+        message = tidy_address(message)
+    except Exception:
+        pass
     _LOGGER.info("Observer speaking → %s: %s", targets, message)
 
     # Resolve TTS entity from config (same as the rest of JARVIS)
@@ -989,18 +1044,24 @@ async def _speak(message: str, *, targets: list[str]) -> None:
     except Exception as exc:
         _LOGGER.debug("Observer TTS resolve fallback to tts.piper: %s", exc)
 
+    # Speak in the configured JARVIS voice, not the engine default (issue #400).
+    try:
+        from .tts_helper import voice_options
+        _opts = voice_options(hass, tts_entity)
+    except Exception:
+        _opts = {}
+
     for target in targets:
         try:
-            await hass.services.async_call(
-                "tts", "speak",
-                {
-                    "entity_id": tts_entity,
-                    "media_player_entity_id": target,
-                    "message": message,
-                    "cache": False,
-                },
-                blocking=False,
-            )
+            _data = {
+                "entity_id": tts_entity,
+                "media_player_entity_id": target,
+                "message": message,
+                "cache": False,
+            }
+            if _opts:
+                _data["options"] = _opts
+            await hass.services.async_call("tts", "speak", _data, blocking=False)
         except Exception as exc:
             _LOGGER.warning("tts.speak to %s failed: %s", target, exc)
 

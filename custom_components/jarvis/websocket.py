@@ -122,6 +122,16 @@ def _runtime_opt(hass: HomeAssistant, entry, key: str, default=None):
     return jarvis_config.runtime_get(hass, entry, key, default)
 
 
+def _honorific_payload(value) -> str:
+    """Honorific for the panel payload. An explicitly-blank honorific (the owner
+    wants no form of address) is preserved; only a truly-unset value (``None``)
+    falls back to the default, so a cleared honorific no longer snaps back to
+    "sir" on the next panel render (#400 #8)."""
+    if value is None:
+        return DEFAULT_HONORIFIC
+    return str(value)
+
+
 def _is_admin(connection) -> bool:
     """True only for an authenticated admin Home Assistant user. Fail-safe:
     a missing connection/user reads as non-admin, so write actions deny by
@@ -774,8 +784,11 @@ async def ws_get_panel_data(
             "suggestions":    suggestions,
             "goals":          goals,
             "config": {
-                "honorific": str(_runtime_opt(hass, entry, "honorific", DEFAULT_HONORIFIC)
-                                 or DEFAULT_HONORIFIC),
+                # Preserve an explicitly-blank honorific (the owner wants no form
+                # of address) — only fall back to the default when truly unset, so
+                # the panel no longer snaps a cleared honorific back to "sir"
+                # (#400 #8).
+                "honorific": _honorific_payload(_runtime_opt(hass, entry, "honorific", None)),
                 # ── Config-flow parity (9.19.0): current values for the panel's
                 # mirrored settings. Secrets (api keys, imap password) are never
                 # surfaced here. ──
@@ -783,6 +796,12 @@ async def ws_get_panel_data(
                 "observer_quiet_end": quiet_end,
                 "bedroom_areas": list(bedroom_areas or []),
                 "broadcast_group": broadcast_group,
+                # ── Issue #400 settings ──
+                "arrival_greeting_enabled": bool(_runtime_opt(hass, entry, "arrival_greeting_enabled", True)),
+                "arrival_min_away_minutes": int(_runtime_opt(hass, entry, "arrival_min_away_minutes", 10) or 0),
+                "quiet_hours_push_critical_only": bool(_runtime_opt(hass, entry, "quiet_hours_push_critical_only", False)),
+                "presence_only_entities": list(_runtime_opt(hass, entry, "presence_only_entities", []) or []),
+                "proactive_questions_interactive": bool(_runtime_opt(hass, entry, "proactive_questions_interactive", True)),
                 "directive_preset": str(_runtime_opt(hass, entry, "directive_preset", _DEF_DIR_PRESET)
                                         or _DEF_DIR_PRESET),
                 "directive": str(_runtime_opt(hass, entry, "directive", "") or ""),
@@ -908,6 +927,7 @@ async def ws_get_panel_data(
                 # before the answer, so it needs more room than the tight
                 # non-thinking defaults (220/300 tokens).
                 "vision_thinking_max_tokens":    _runtime_opt(hass, entry, "vision_thinking_max_tokens", 1024),
+                "review_enabled":      bool(_runtime_opt(hass, entry, "review_enabled", False)),
                 "review_provider":     str(_runtime_opt(hass, entry, "review_provider", "") or ""),
                 "review_model":        str(_runtime_opt(hass, entry, "review_model", "") or ""),
                 "vision_provider":     str(_runtime_opt(hass, entry, "vision_provider", "") or ""),
@@ -1575,6 +1595,7 @@ PANEL_WRITABLE_KEYS = {
     "classifier_model",
     "reasoning_provider",
     "reasoning_model",
+    "review_enabled",               # bool: run the second-opinion review pass (issue #400 #10)
     "review_provider",
     "review_model",
     "vision_provider",
@@ -1637,6 +1658,12 @@ PANEL_WRITABLE_KEYS = {
     "imap_user",                    # str: IMAP username
     "imap_folder",                  # str: IMAP folder (default INBOX)
     "imap_ssl",                     # bool: IMAP over SSL
+    # ── Issue #400 ──
+    "arrival_greeting_enabled",     # bool: speak a welcome-home greeting on arrival (#3)
+    "arrival_min_away_minutes",     # int: minimum minutes away before an arrival counts (#3)
+    "quiet_hours_push_critical_only",  # bool: during quiet hours, push only critical (#4)
+    "presence_only_entities",       # list[entity_id]: visible to presence, never escalated/announced (#4)
+    "proactive_questions_interactive",  # bool: open the mic for proactive questions (#6)
 }
 
 # ── Debug log ring buffer ────────────────────────────────────────────────────
