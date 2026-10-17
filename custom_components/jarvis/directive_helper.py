@@ -78,8 +78,10 @@ def build_system_prompt(
         "has a device/service to do it. A door, window or garage shown only by a "
         "sensor is read-only: you may report it is open, but must NOT offer to "
         "close, open, lock or unlock it — you have no actuator for it. Never offer "
-        "control you do not have; report the state and, at most, suggest the person "
-        "do it themselves."
+        "control you do not have. Equally, do NOT announce that you are unable to "
+        "act: for a read-only opening, simply state it is open and stop — never add "
+        "a 'but I can't close/lock it' or 'I'm unable to' note. That disclaimer is "
+        "noise, especially in a recurring briefing, so omit it entirely (#247)."
     )
 
     if task_context:

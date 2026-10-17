@@ -109,7 +109,13 @@ def _gather_open_things(hass: HomeAssistant) -> list[str]:
             if name in controllable_names:
                 items.append(f"{name} is open")
             else:
-                items.append(f"{name} is open (monitored only — no actuator to close it)")
+                # Read-only sensor: tag it so the briefing LLM neither offers to
+                # close it NOR narrates that it can't (#247 follow-up — the stray
+                # "I'm unable to lock it" every briefing is noise). The tag is a
+                # directive, not prose to relay.
+                items.append(
+                    f"{name} is open [read-only sensor: report as open only; "
+                    f"do not offer to close it and do not say you cannot]")
     for state in hass.states.async_all("lock"):
         if state.state == "unlocked":
             name = state.attributes.get("friendly_name", state.entity_id)
