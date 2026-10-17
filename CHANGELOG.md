@@ -1,3 +1,18 @@
+## [9.24.1] — Briefing: stop repeating "I can't close/lock it" (#247 follow-up)
+
+The #247 fix stopped JARVIS *offering* to close a sensor-only window/door it
+can't actuate — but it then narrated the inability instead ("the window is open,
+but I'm unable to lock it") on **every** briefing, which is its own noise.
+
+- `briefing._gather_open_things` still reports a read-only opening as open and
+  still tags it so the LLM won't offer control — but the tag now also says not
+  to state the inability.
+- The global **CAPABILITY HONESTY** prompt rule is extended: for a read-only
+  opening, report it is open and stop — never add a "but I can't close/lock it"
+  or "I'm unable to" disclaimer. This covers briefings, arrival greetings and
+  other proactive messages. Open windows/doors are still surfaced; only the
+  repeated can't-act disclaimer is dropped.
+
 ## [9.24.0] — Issue #400: observer/quiet-hours/TTS/bootstrap fixes
 
 Addresses every item of the 10-point report in issue #400. The bug fixes change

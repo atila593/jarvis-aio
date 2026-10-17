@@ -28,7 +28,25 @@ def test_sensor_only_window_is_marked_not_actionable(briefing, fake_hass, monkey
         _st("binary_sensor.office_window", "on",
             device_class="window", friendly_name="Office Window")])
     items = briefing._gather_open_things(fake_hass)
-    assert items == ["Office Window is open (monitored only — no actuator to close it)"]
+    # #247 follow-up: still reports it's open and still tags it read-only (so the
+    # LLM won't offer control), but the tag now also says NOT to narrate the
+    # inability — no "I'm unable to lock it" every briefing.
+    assert len(items) == 1
+    assert items[0].startswith("Office Window is open")
+    assert "read-only sensor" in items[0]
+    assert "do not say you cannot" in items[0]
+
+
+def test_capability_honesty_prompt_suppresses_inability_narration():
+    """The global CAPABILITY HONESTY rule must tell proactive messages not to
+    announce that JARVIS cannot act — report the state and stop (#247). Read the
+    real source (conftest stubs directive_helper for other tests)."""
+    import pathlib
+    src = pathlib.Path(
+        "custom_components/jarvis/directive_helper.py").read_text()
+    assert "CAPABILITY HONESTY" in src
+    assert "do NOT announce that you are unable" in src
+    assert "noise" in src.lower()
 
 
 def test_unlocked_lock_stays_actionable(briefing, fake_hass, monkeypatch):
