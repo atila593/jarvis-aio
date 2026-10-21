@@ -138,6 +138,21 @@ def mirror_delivery_sync(hass, entity_id: str, action: str,
         cur = mgr.get(cur_id) if cur_id else None
         episode_id: Optional[str] = None
 
+        # After an HA restart the in-memory id map is empty, so an episode opened
+        # before the restart is invisible here. A stale OPEN delivery episode then
+        # never resolves on 'removed', and kernel_present (which reads the store
+        # directly) stays True forever — so new deliveries are never announced
+        # (#404). Recover the open episode for this subject from the store.
+        if cur is None:
+            try:
+                for sit in mgr.open_situations("delivery"):
+                    if getattr(sit, "subject", None) == entity_id and not sit.terminal:
+                        cur = sit
+                        _delivery_situation_ids[entity_id] = sit.id
+                        break
+            except Exception:
+                cur = None
+
         if action == "delivered":
             if cur is None or cur.terminal:
                 sit = mgr.open("delivery", subject=entity_id,

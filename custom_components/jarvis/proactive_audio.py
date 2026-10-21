@@ -33,7 +33,18 @@ from . import audio_routing
 from .audio import NoiseGate, ProsodyController
 from .automation import EntityLockRegistry, PredictiveHabitMatrix
 from .boot_guard import AlertBuffer
-from .const import CONF_BROADCAST_GROUP, CONF_HONORIFIC, DEFAULT_HONORIFIC, DOMAIN
+from .const import (
+    CONF_BROADCAST_GROUP,
+    CONF_HONORIFIC,
+    CONF_TTS_ENGINE,
+    CONF_TTS_PREMIUM_CONTEXTS,
+    CONF_TTS_PREMIUM_ENGINE,
+    DEFAULT_HONORIFIC,
+    DEFAULT_TTS_ENGINE,
+    DEFAULT_TTS_PREMIUM_CONTEXTS,
+    DEFAULT_TTS_PREMIUM_ENGINE,
+    DOMAIN,
+)
 from .diagnostics import FaultLog, InfrastructureTriage
 from .intent import LocalIntentRouter
 from .paths import config_path_str
@@ -339,12 +350,45 @@ async def _try_interactive_question(
 
 
 def _resolve_tts_entity(hass: HomeAssistant) -> str:
-    """Prefer a panel-configured TTS entity (runtime_config), else the default."""
+    """The TTS entity ``jarvis.speak`` speaks through.
+
+    Priority: (1) an explicit ``proactive_tts_entity`` override (panel), then
+    (2) the SAME auto-pick the rest of JARVIS uses — ``resolve_tts_for_context``
+    honouring the configured ``tts_engine`` ('auto' → first available). This makes
+    ``jarvis.speak`` follow the chosen engine (e.g. ``tts.home_assistant_cloud``),
+    not a hardcoded ``tts.piper`` that may not be installed (#404). Only if nothing
+    resolves does it fall back to ``DEFAULT_TTS_ENTITY``."""
+    rc_all: dict = {}
     for data in hass.data.get(DOMAIN, {}).values():
         if isinstance(data, dict):
             rc = data.get("runtime_config", {})
-            if isinstance(rc, dict) and rc.get("proactive_tts_entity"):
-                return str(rc["proactive_tts_entity"])
+            if isinstance(rc, dict):
+                if rc.get("proactive_tts_entity"):
+                    return str(rc["proactive_tts_entity"])
+                if not rc_all and rc:
+                    rc_all = rc
+
+    def _cfg(key, default):
+        if key in rc_all:
+            return rc_all[key]
+        try:
+            from . import jarvis_config
+            return jarvis_config.get(key, default)
+        except Exception:
+            return default
+
+    try:
+        from .tts_helper import resolve_tts_for_context
+        resolved = resolve_tts_for_context(
+            hass, "chat",
+            _cfg(CONF_TTS_ENGINE, DEFAULT_TTS_ENGINE),
+            _cfg(CONF_TTS_PREMIUM_ENGINE, DEFAULT_TTS_PREMIUM_ENGINE),
+            _cfg(CONF_TTS_PREMIUM_CONTEXTS, DEFAULT_TTS_PREMIUM_CONTEXTS),
+        )
+        if resolved:
+            return resolved
+    except Exception as exc:  # noqa: BLE001 - never let jarvis.speak die on resolve
+        _LOGGER.debug("jarvis.speak TTS auto-resolve failed: %s", exc)
     return DEFAULT_TTS_ENTITY
 
 
@@ -603,10 +647,15 @@ async def _speak_tts(
     # not just the engine default (issue #400).
     options = dict(_tts_options(profile) or {})
     try:
-        from .tts_helper import voice_options
+        from .tts_helper import voice_options, voice_language
         options.update(voice_options(hass, tts_entity))
+        _lang = voice_language(hass, tts_entity)
     except Exception:
-        pass
+        _lang = None
+    # Language is a top-level service field, NOT an option — tts.speak rejects it
+    # inside options (#404).
+    if _lang:
+        payload["language"] = _lang
     try:
         await hass.services.async_call(
             "tts", "speak", {**payload, "options": options}, blocking=True

@@ -1046,10 +1046,12 @@ async def _speak(message: str, *, targets: list[str]) -> None:
 
     # Speak in the configured JARVIS voice, not the engine default (issue #400).
     try:
-        from .tts_helper import voice_options
+        from .tts_helper import voice_options, voice_language
         _opts = voice_options(hass, tts_entity)
+        _lang = voice_language(hass, tts_entity)
     except Exception:
         _opts = {}
+        _lang = None
 
     for target in targets:
         try:
@@ -1061,6 +1063,10 @@ async def _speak(message: str, *, targets: list[str]) -> None:
             }
             if _opts:
                 _data["options"] = _opts
+            if _lang:
+                # Top-level field, never an option — tts.speak rejects language
+                # inside options (#404).
+                _data["language"] = _lang
             await hass.services.async_call("tts", "speak", _data, blocking=False)
         except Exception as exc:
             _LOGGER.warning("tts.speak to %s failed: %s", target, exc)

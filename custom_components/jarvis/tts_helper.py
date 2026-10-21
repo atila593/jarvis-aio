@@ -203,17 +203,15 @@ def _preferred_pipeline_voice(hass, tts_entity):
     return None, None
 
 
-def voice_options(hass, tts_entity, runtime_configs=None) -> dict:
-    """The ``options`` dict to attach to ``tts.speak`` so JARVIS speaks in the
-    chosen voice on EVERY speech path — chat, observer, and ``jarvis.speak`` —
-    not only Piper (issue #400). ``{}`` means "accept the engine default".
-
-    Piper (unless ``tts_use_ha_voice``) → the ``en_GB-jarvis`` voice at the
-    configured quality. Otherwise (a non-Piper engine, or ``tts_use_ha_voice``
-    on) → an explicit ``tts_voice``/``tts_language`` from config if set, else the
-    voice+language of the Assist pipeline that uses this engine."""
+def _resolve_voice_language(hass, tts_entity, runtime_configs=None):
+    """``(voice, language, is_piper)`` for ``tts_entity`` — the raw inputs the two
+    public helpers below split between ``tts.speak``'s ``options`` (voice) and its
+    top-level ``language`` field. Piper → the ``en_GB-jarvis`` voice at the
+    configured quality (no language — it's encoded in the voice name); otherwise →
+    an explicit ``tts_voice``/``tts_language`` from config if set, else the
+    voice+language of the Assist pipeline on this engine. Defensive."""
     if not tts_entity:
-        return {}
+        return None, None, False
     if runtime_configs is None:
         try:
             from .const import DOMAIN
@@ -227,7 +225,7 @@ def voice_options(hass, tts_entity, runtime_configs=None) -> dict:
     is_piper = "piper" in tts_entity.lower()
     jarvis_voice = _pick_jarvis_voice(runtime_configs, is_piper)
     if jarvis_voice:
-        return {"voice": jarvis_voice}
+        return jarvis_voice, None, is_piper
     voice = language = None
     for rc in runtime_configs or []:
         if isinstance(rc, dict):
@@ -235,14 +233,33 @@ def voice_options(hass, tts_entity, runtime_configs=None) -> dict:
             language = rc.get("tts_language") or language
     if not voice:
         voice, language = _preferred_pipeline_voice(hass, tts_entity)
-    opts: dict = {}
-    if voice:
-        opts["voice"] = voice
-        # A language hint can push some Piper/Wyoming builds onto a default
-        # voice, so only pass language for non-Piper engines.
-        if language and not is_piper:
-            opts["language"] = language
-    return opts
+    return voice, language, is_piper
+
+
+def voice_options(hass, tts_entity, runtime_configs=None) -> dict:
+    """The ``options`` dict to attach to ``tts.speak`` so JARVIS speaks in the
+    chosen voice on EVERY speech path — chat, observer, and ``jarvis.speak`` —
+    not only Piper (issue #400). ``{}`` means "accept the engine default".
+
+    Carries the **voice only**. ``language`` is NEVER put in ``options``: HA's
+    ``tts.speak`` rejects it there (``Invalid options found: ['language']`` — a
+    regression seen on Cloud TTS, #404) — it is a top-level service field, so
+    callers read it from :func:`voice_language` and pass it as ``language=``."""
+    voice, _language, _is_piper = _resolve_voice_language(hass, tts_entity, runtime_configs)
+    return {"voice": voice} if voice else {}
+
+
+def voice_language(hass, tts_entity, runtime_configs=None):
+    """The value for ``tts.speak``'s top-level ``language`` field, or ``None``.
+
+    Only for a NON-Piper engine when a language is known: Piper infers language
+    from the voice name, and a language hint can knock it onto a default voice, so
+    Piper never gets one (#400/#404). Pair with :func:`voice_options`: options
+    carries the voice, this carries the language field."""
+    voice, language, is_piper = _resolve_voice_language(hass, tts_entity, runtime_configs)
+    if voice and language and not is_piper:
+        return language
+    return None
 
 
 async def async_announce(
@@ -323,6 +340,7 @@ async def async_announce(
     # (non-Piper / tts_use_ha_voice) the configured or pipeline voice+language,
     # so every path speaks in the chosen voice, not just Piper (issue #400).
     opts = voice_options(hass, tts_entity, _rcs)
+    lang = voice_language(hass, tts_entity, _rcs)
 
     service_data = {
         "media_player_entity_id": list(speakers),
@@ -334,6 +352,10 @@ async def async_announce(
         # fallback below retries without it and uses the engine's default voice,
         # so a missing custom voice is never fatal.
         service_data["options"] = opts
+    if lang:
+        # Language is a top-level field, NOT an option — tts.speak rejects it in
+        # options (#404). Harmless for engines that ignore it.
+        service_data["language"] = lang
 
     try:
         await hass.services.async_call(
@@ -377,6 +399,8 @@ async def async_announce(
                     }
                     if opts:
                         one["options"] = opts
+                    if lang:
+                        one["language"] = lang
                     await hass.services.async_call(
                         "tts", "speak", one,
                         target={"entity_id": tts_entity}, blocking=False,
