@@ -206,6 +206,40 @@ def everyone_confidently_away(hass) -> bool:
         return False
 
 
+# Device classes that mean "a human is (still) in this area". mmWave/radar
+# presence sensors (Shelly Presence Gen4, Aqara FP2, Everything Presence, ESPHome
+# LD2410/LD2420, …) report one of these. `motion` is deliberately excluded from
+# the awareness summary — it's transient and would make the "who's where" view
+# flap — but audio_routing still uses it for immediate room routing.
+_PRESENCE_CLASSES = ("occupancy", "presence")
+
+# A radar occupant/target count sensor has no standard device_class, so it's
+# recognised by name shape: a numeric "...count" naming a person/target/object.
+_COUNT_NAME_TOKENS = ("target", "person", "people", "occupan", "object", "presence")
+
+
+def _to_number(value) -> Optional[float]:
+    """Parse a state string to a float, or None (unknown/unavailable/non-numeric)."""
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    return f if f == f else None  # drop NaN
+
+
+def _area_room_name(hass, area_id: Optional[str]) -> Optional[str]:
+    """The HA area's human name (lowercased) for an area_id, or None."""
+    if not area_id:
+        return None
+    try:
+        from homeassistant.helpers import area_registry as ar
+        area = ar.async_get(hass).async_get_area(area_id)
+        nm = getattr(area, "name", None) if area else None
+        return nm.lower() if nm else None
+    except Exception:
+        return None
+
+
 def get_presence_summary(hass: HomeAssistant) -> dict:
     """
     Return a summary of who's home and where.
@@ -216,9 +250,14 @@ def get_presence_summary(hass: HomeAssistant) -> dict:
         "home_count":    int,
         "away_count":    int,
         "people":        [{"name": "Sam", "state": "home", ...}, ...],
-        "rooms":         {"kitchen": ["Sam"], "office": ["Alex"]},
+        "rooms":         {"kitchen": [], "living room": []},   # occupied areas
+        "room_details":  {"living room": {"occupants": 2, "lux": 40.0}},
         "anyone_home":   bool,
       }
+
+    ``rooms`` keys are occupied areas (mmWave/radar presence sensors, mapped to
+    their HA area). ``room_details`` adds occupant count + illuminance per room
+    where a radar count / illuminance sensor exists in that area.
     """
     people = []
     for state in hass.states.async_all("person"):
@@ -229,9 +268,14 @@ def get_presence_summary(hass: HomeAssistant) -> dict:
     home_count = sum(1 for p in people if p.get("state") == "home")
     away_count = len(people) - home_count
 
-    # Room detection via mmWave sensors — Aqara FP2 exposes sensor.*_presence
-    # with occupancy attributes, or binary_sensor.*_occupancy. We scan both.
+    # Room detection via mmWave/radar presence sensors (Shelly Presence Gen4,
+    # Aqara FP2, Everything Presence, ESPHome LD2410, …). Recognise the whole
+    # presence family (`occupancy` + `presence`), and map each sensor to the HA
+    # AREA its device is assigned to — far more reliable than parsing the sensor's
+    # own name, which turns e.g. "Presence Gen4 Occupancy" into a bogus room.
     rooms: dict[str, list[str]] = {}
+    room_details: dict[str, dict] = {}
+    _area_to_room: dict[str, str] = {}   # area_id -> room, for occupied areas only
     try:
         from .entity_filter import is_excluded as _excl
     except Exception:
@@ -240,10 +284,15 @@ def get_presence_summary(hass: HomeAssistant) -> dict:
         from .entity_filter import is_nonperson_object_sensor as _nonperson
     except Exception:
         _nonperson = lambda _e, _n=None: False
+    try:
+        from .audio_routing import entity_area as _entity_area
+    except Exception:
+        _entity_area = lambda _h, _e: None
+
     for state in hass.states.async_all("binary_sensor"):
         if state.state != "on":
             continue
-        if state.attributes.get("device_class") != "occupancy":
+        if state.attributes.get("device_class") not in _PRESENCE_CLASSES:
             continue
         if _excl(hass, state.entity_id):
             continue  # user excluded this sensor (e.g. a virtual occupancy sensor)
@@ -251,10 +300,40 @@ def get_presence_summary(hass: HomeAssistant) -> dict:
         if _nonperson(state.entity_id, name):
             continue  # #254: a car/animal/package detector is not a human being present
 
-        # Try to extract the room from the name (e.g. "Kitchen Presence")
-        room = name.lower().replace("presence", "").replace("occupancy", "").strip()
+        # Prefer the HA area the device is in; fall back to parsing the name.
+        area_id = _entity_area(hass, state.entity_id)
+        room = _area_room_name(hass, area_id)
+        if room:
+            if area_id:
+                _area_to_room[area_id] = room
+        else:
+            room = name.lower().replace("presence", "").replace("occupancy", "").strip()
         if room:
             rooms.setdefault(room, [])
+
+    # Occupant COUNT and ILLUMINANCE from radar/light sensors, attributed to an
+    # occupied room by HA area — so JARVIS knows "2 people in the living room at
+    # 40 lux", not just that the room is occupied. Only for rooms already detected
+    # as occupied, so idle sensors elsewhere add no noise.
+    if _area_to_room:
+        for state in hass.states.async_all("sensor"):
+            area_id = _entity_area(hass, state.entity_id)
+            room = _area_to_room.get(area_id) if area_id else None
+            if not room or _excl(hass, state.entity_id):
+                continue
+            val = _to_number(state.state)
+            if val is None:
+                continue
+            dc = state.attributes.get("device_class")
+            nm = str(state.attributes.get("friendly_name", state.entity_id)).lower()
+            det = room_details.setdefault(room, {})
+            if dc == "illuminance":
+                if det.get("lux") is None or val > det["lux"]:
+                    det["lux"] = val
+            elif "count" in nm and any(tok in nm for tok in _COUNT_NAME_TOKENS):
+                iv = int(val)
+                if det.get("occupants") is None or iv > det["occupants"]:
+                    det["occupants"] = iv
 
     if CONFLICT_SHADOW:
         _emit_presence_conflict_shadow(hass)   # #237: observe-only
@@ -267,6 +346,7 @@ def get_presence_summary(hass: HomeAssistant) -> dict:
         "away_count":   away_count,
         "people":       people,
         "rooms":        rooms,
+        "room_details": room_details,   # {room: {"occupants": int, "lux": float}}
         "anyone_home":  home_count > 0,
     }
 
@@ -293,7 +373,19 @@ def presence_context_string(hass: HomeAssistant) -> str:
 
     summary = ". ".join(bits) + "."
     if data["rooms"]:
-        summary += f" Occupied areas: {', '.join(data['rooms'].keys())}."
+        details = data.get("room_details", {})
+        parts: list[str] = []
+        for room in data["rooms"].keys():
+            d = details.get(room) or {}
+            extra: list[str] = []
+            occ = d.get("occupants")
+            if occ:
+                extra.append(f"{occ} {'person' if occ == 1 else 'people'}")
+            lux = d.get("lux")
+            if lux is not None:
+                extra.append(f"{round(lux)} lux")
+            parts.append(f"{room} ({', '.join(extra)})" if extra else room)
+        summary += f" Occupied areas: {', '.join(parts)}."
     return summary
 
 
