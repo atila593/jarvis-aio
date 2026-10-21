@@ -1,3 +1,32 @@
+## [9.25.0] — mmWave presence awareness (Shelly Presence Gen4 & friends)
+
+Makes JARVIS's awareness of *who's where* understand modern radar presence
+sensors — the Shelly Presence Gen4 and any sensor with the same capabilities
+(Aqara FP2, Everything Presence, ESPHome LD2410/LD2420, …) — with no per-brand
+code. The routing layer already handled these; this brings the **awareness
+summary** (what JARVIS reports and reasons over) up to the same standard.
+
+- **Whole presence family recognised.** `presence.get_presence_summary` now
+  counts `binary_sensor` device classes **`occupancy` and `presence`** (was
+  `occupancy` only), so sensors that report `presence` are no longer invisible.
+  Bare `motion` stays out of the "who's where" view (too transient — it would
+  flap), though audio_routing still uses it for immediate room routing.
+- **Rooms mapped by HA area, not by sensor name.** Each presence sensor is
+  attributed to the **Home Assistant area** its device is assigned to, instead
+  of string-parsing the entity's name — which previously turned a device like
+  "Presence Gen4 Occupancy" into a bogus room ("gen4"). Falls back to the old
+  name parsing only when a sensor has no area.
+- **Occupant count + illuminance.** For each occupied area, the summary now also
+  surfaces the radar **occupant/target count** and the **illuminance (lux)** from
+  sensors in that same area, exposed as a new `room_details` key and woven into
+  the presence context line (e.g. *"Occupied areas: living room (2 people,
+  40 lux), office."*). Only occupied rooms get details, so idle sensors
+  elsewhere add no noise.
+
+Existing exclusions and the non-person (car/pet/package) filter still apply. No
+configuration change is needed — assign your presence sensors to HA areas and
+JARVIS uses them.
+
 ## [9.24.2] — Issue #404: TTS regressions from #401, + delivery restart fix
 
 Fixes two TTS regressions from 9.24.0's #401 work (both confirmed by the
