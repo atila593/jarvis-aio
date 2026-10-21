@@ -1,3 +1,27 @@
+## [9.24.2] — Issue #404: TTS regressions from #401, + delivery restart fix
+
+Fixes two TTS regressions from 9.24.0's #401 work (both confirmed by the
+reporter), plus a pre-existing delivery bug surfaced in the same report.
+
+- **`language` no longer breaks non-Piper TTS (#404.1).** 9.24.0 attached the
+  Assist pipeline's `language` *inside* `tts.speak`'s `options`, which Home
+  Assistant rejects (`Invalid options found: ['language']`) — so Cloud TTS /
+  Azure voices spoke nothing. `language` is now passed as `tts.speak`'s
+  top-level `language` field; `options` carries only the voice. (Piper still
+  never gets a language hint, as before.)
+- **`jarvis.speak` follows the chosen TTS engine (#404.2).** It resolved its own
+  entity and fell back to a hardcoded `tts.piper` that may not be installed, so
+  `jarvis.speak` was silent on installs without Piper even though diagnostics
+  showed `tts.home_assistant_cloud`. It now uses the same auto-pick
+  (`resolve_tts_for_context`) as the rest of JARVIS, after any explicit
+  `proactive_tts_entity` override.
+- **Delivery episodes recover after an HA restart (#404.3).** The in-memory
+  camera→episode map is empty after a restart, so a `delivery` episode opened
+  before the restart could never be resolved on "removed" — `kernel_present`
+  then stayed True forever and new deliveries were never announced. The mirror
+  now recovers an open episode for the subject straight from `situations.db`, so
+  "removed" resolves it (and a later "delivered" doesn't open a duplicate).
+
 ## [9.24.1] — Briefing: stop repeating "I can't close/lock it" (#247 follow-up)
 
 The #247 fix stopped JARVIS *offering* to close a sensor-only window/door it

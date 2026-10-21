@@ -151,11 +151,13 @@ def test_voice_options_piper_uses_jarvis_voice(tts):
 
 
 def test_voice_options_non_piper_uses_config_voice(tts):
-    opts = tts.voice_options(
-        FakeHass(), "tts.google_cloud",
-        [{"tts_voice": "en-GB-Standard-B", "tts_language": "en-GB"}])
-    assert opts.get("voice") == "en-GB-Standard-B"
-    assert opts.get("language") == "en-GB"   # language allowed for non-Piper
+    # #404: language is NEVER in options (tts.speak rejects it there) — the voice
+    # is in options, the language comes from voice_language() as a top-level field.
+    rc = [{"tts_voice": "en-GB-Standard-B", "tts_language": "en-GB"}]
+    opts = tts.voice_options(FakeHass(), "tts.google_cloud", rc)
+    assert opts == {"voice": "en-GB-Standard-B"}
+    assert "language" not in opts
+    assert tts.voice_language(FakeHass(), "tts.google_cloud", rc) == "en-GB"
 
 
 def test_voice_options_piper_never_sends_language(tts):
