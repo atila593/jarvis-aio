@@ -1,3 +1,20 @@
+## [9.26.0] — Import a floor plan from a vacuum map (#405)
+
+You no longer have to draw or upload a floor plan by hand — JARVIS can pull one
+straight from a robot vacuum's cleaned-area map (or any dashboard image entity)
+and drop it in as the Residence floor-plan background.
+
+- **Floor-plan editor → "Import Map".** A new dropdown + button in the Residence
+  floor-plan editor lists `image.*` and vacuum/map `camera.*` entities (Valetudo,
+  Roborock, Dreame, Ecovacs, Neato, …, e.g. `image.cleaner_living_room_map_0`)
+  and imports the chosen entity's current image as the background for the floor
+  being edited. Set its opacity with the existing control and lay rooms over it.
+- **Behind it:** new `floorplan_import` helper + two websocket commands —
+  `jarvis/floorplan_sources` (discover candidates) and `jarvis/import_floorplan`
+  (admin-only; fetches the entity's image via its proxy/camera API and stores it
+  into `floor_plan_bg`, exactly like the manual upload). No new integration
+  dependency; best-effort and non-fatal throughout.
+
 ## [9.25.0] — mmWave presence awareness (Shelly Presence Gen4 & friends)
 
 Makes JARVIS's awareness of *who's where* understand modern radar presence
