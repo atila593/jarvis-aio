@@ -3942,6 +3942,10 @@ dotLabel.textContent = lightBtn.classList.contains("adl")
     html += '</div>';
     html += '<div style="display:flex;gap:6px;align-items:center;">';
     html += '<label class="ctrl" style="padding:5px 10px;font-size:9px;cursor:pointer;">Import BG <input type="file" accept="image/*" class="fp-import-img" style="display:none"/></label>';
+    // Import a floor plan straight from a vacuum-robot map / dashboard image
+    // entity — no manual upload (#405). Populated from jarvis/floorplan_sources.
+    html += '<select class="fp-import-entity ctrl" title="Import a floor plan from a vacuum map or image entity" style="padding:5px 8px;font-size:9px;max-width:170px;"><option value="">Map/vacuum…</option></select>';
+    html += '<button class="ctrl" id="fp-import-entity-btn" style="padding:5px 10px;font-size:9px;">Import Map</button>';
     html += '<button class="ctrl" id="fp-export" style="padding:5px 10px;font-size:9px;">Export</button>';
     html += '<label class="ctrl" style="padding:5px 10px;font-size:9px;cursor:pointer;">Import <input type="file" accept=".json,application/json" class="fp-import-layout" style="display:none"/></label>';
     html += '<button class="ctrl" id="fp-add-room" style="padding:5px 10px;font-size:9px;">+ Add Room</button>';
@@ -7118,6 +7122,48 @@ ${this._renderExcludedEntities(d)}
           } catch (err) { this._toast("\u2717 Image import failed \u2014 " + err, "err"); }
         };
         reader.readAsDataURL(file);
+      });
+    }
+
+    // Import a floor plan from a vacuum-map / image entity (#405). Populate the
+    // source dropdown lazily, then import the chosen entity's current image.
+    const fpEntSel = this.shadowRoot.querySelector(".fp-import-entity");
+    if (fpEntSel && !fpEntSel._loaded) {
+      fpEntSel._loaded = true;
+      (async () => {
+        try {
+          const res = await this._hass.callWS({ type: "jarvis/floorplan_sources" });
+          const sources = (res && res.sources) || [];
+          for (const s of sources) {
+            const opt = document.createElement("option");
+            opt.value = s.entity_id;
+            opt.textContent = (s.name || s.entity_id) + " (" + s.domain + ")";
+            fpEntSel.appendChild(opt);
+          }
+          if (!sources.length) {
+            const opt = document.createElement("option");
+            opt.value = ""; opt.disabled = true;
+            opt.textContent = "no map/image entities found";
+            fpEntSel.appendChild(opt);
+          }
+        } catch (_) { /* best-effort */ }
+      })();
+    }
+    const fpEntBtn = this.shadowRoot.getElementById("fp-import-entity-btn");
+    if (fpEntBtn) {
+      fpEntBtn.addEventListener("click", async () => {
+        const sel = this.shadowRoot.querySelector(".fp-import-entity");
+        const entity_id = sel && sel.value;
+        if (!entity_id) { this._toast("Pick a map/image entity first", "err"); return; }
+        const floor = this._editorFloor || "1f";
+        try {
+          await this._hass.callWS({ type: "jarvis/import_floorplan", entity_id, floor });
+          this._toast("✓ Floor plan imported from " + entity_id + " for " + floor, "ok");
+          await this._fetchAndRender();
+          this._rerenderFloorEditor();
+        } catch (err) {
+          this._toast("✗ Import failed — " + (err?.message || err), "err");
+        }
       });
     }
 

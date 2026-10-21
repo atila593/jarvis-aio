@@ -93,6 +93,8 @@ def async_register(hass: HomeAssistant) -> None:
         websocket_api.async_register_command(hass, ws_biometrics)
         websocket_api.async_register_command(hass, ws_get_enforcement)
         websocket_api.async_register_command(hass, ws_set_enforcement)
+        websocket_api.async_register_command(hass, ws_floorplan_sources)
+        websocket_api.async_register_command(hass, ws_import_floorplan)
     except Exception as exc:
         _LOGGER.debug("WS command register note: %s", exc)
 
@@ -2203,6 +2205,54 @@ async def ws_set_enforcement(
     except Exception as exc:
         _LOGGER.warning("ws_set_enforcement failed: %s", exc)
         connection.send_error(msg["id"], "enforcement_set_failed", str(exc))
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "jarvis/floorplan_sources",
+})
+@websocket_api.async_response
+async def ws_floorplan_sources(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """List image/camera entities that look like a vacuum map or floor-plan image
+    the user could import as a floor-plan background (#405)."""
+    try:
+        from . import floorplan_import
+        connection.send_result(
+            msg["id"], {"sources": floorplan_import.list_sources(hass)})
+    except Exception as exc:
+        _LOGGER.warning("ws_floorplan_sources failed: %s", exc)
+        connection.send_error(msg["id"], "floorplan_sources_failed", str(exc))
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command({
+    vol.Required("type"): "jarvis/import_floorplan",
+    vol.Required("entity_id"): str,
+    vol.Optional("floor", default="1f"): str,
+})
+@websocket_api.async_response
+async def ws_import_floorplan(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Fetch a vacuum-map / dashboard image entity's current image and store it as
+    the floor-plan background for the given floor — no manual upload (#405).
+    Admin-gated (it writes the floor-plan config)."""
+    try:
+        from . import floorplan_import
+        res = await floorplan_import.async_import_to_floor(
+            hass, msg["entity_id"], msg.get("floor", "1f"))
+        _LOGGER.info("JARVIS panel: imported floor plan from %s", msg["entity_id"])
+        connection.send_result(msg["id"], res)
+    except ValueError as exc:
+        connection.send_error(msg["id"], "import_failed", str(exc))
+    except Exception as exc:
+        _LOGGER.warning("ws_import_floorplan failed: %s", exc)
+        connection.send_error(msg["id"], "import_failed", str(exc))
 
 
 def _resolve_provider_key(hass: HomeAssistant, entry, provider: str) -> str:
