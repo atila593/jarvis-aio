@@ -151,6 +151,7 @@ tools the agent invokes on its own; most also have a panel control.
 - Set operational modes, including custom ones (`set_mode`), and tune how much JARVIS acts on its own (`manage_autonomy`).
 - Remember facts you tell it (`remember`); open and track standing goals (`create_goal`, `update_goal`, `manage_goals`) and schedule follow-ups (`schedule_followup`, `manage_followups`).
 - Review, approve, or dismiss the automations it proposes from observed patterns (`review_suggestions`, `approve_suggestion`, `dismiss_suggestion`). Suggestions are only offered when they carry a real action (lights, locks, covers, climate, announcements), including occupancy-aware "if this, then that" rules such as lights that stay on until a room is empty or turn on/off as ambient lux crosses a level. Garage-door confirmation suggestions are opt-in under **Settings**.
+- **Author an automation from plain language** (`create_automation`) — "turn the porch light on at sunset" becomes a real Home Assistant automation. Every entity and service it references is checked against your actual home *before* it's installed; a made-up or misspelled name is refused with the closest real one rather than quietly creating an automation that never fires.
 - Mute a noisy entity from awareness, or force it back in (`ignore_entity`, `unignore_entity`); read opt-in wearable/wellbeing context (`wellbeing_context`).
 
 **Resilience & privacy**

@@ -467,6 +467,64 @@ JARVIS_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "create_automation",
+            "description": (
+                "Build and install a NEW Home Assistant automation from the user's "
+                "plain-language request (e.g. 'turn the porch light on at sunset'). "
+                "Use this to author an automation on request; use approve_suggestion "
+                "instead for a pattern JARVIS already learned. Every entity_id and "
+                "service you reference is validated against the real home BEFORE "
+                "install — if a name is wrong the call fails with the closest real "
+                "name and nothing is written, so resolve names with search_entities "
+                "first and retry. Trigger and action use Home Assistant's automation "
+                "format."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "alias": {
+                        "type": "string",
+                        "description": "Short human name for the automation (e.g. 'Porch light at sunset').",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Optional one-line description of what it does.",
+                    },
+                    "trigger": {
+                        "type": "array",
+                        "items": {"type": "object"},
+                        "description": (
+                            "HA trigger(s), e.g. [{\"trigger\":\"state\",\"entity_id\":"
+                            "\"binary_sensor.front_door\",\"to\":\"on\"}] or "
+                            "[{\"trigger\":\"sun\",\"event\":\"sunset\"}]."
+                        ),
+                    },
+                    "condition": {
+                        "type": "array",
+                        "items": {"type": "object"},
+                        "description": "Optional HA condition(s); omit if none.",
+                    },
+                    "action": {
+                        "type": "array",
+                        "items": {"type": "object"},
+                        "description": (
+                            "HA action step(s), e.g. [{\"action\":\"light.turn_on\","
+                            "\"target\":{\"entity_id\":\"light.porch\"}}]."
+                        ),
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["single", "restart", "queued", "parallel"],
+                        "description": "Execution mode (default single).",
+                    },
+                },
+                "required": ["alias", "trigger", "action"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "root_cause",
             "description": (
                 "Investigate WHY something happened — root cause analysis. Given "
@@ -2178,6 +2236,36 @@ async def _exec_dismiss_suggestion(hass: HomeAssistant, args: dict) -> str:
         return json.dumps({"error": str(exc)})
 
 
+async def _exec_create_automation(hass: HomeAssistant, args: dict) -> str:
+    """Author a new HA automation from a plain-language request, validating every
+    entity_id and service against the live home before install (validate=True).
+    On a bad name the creator returns success:false with the closest real name,
+    which the model can use to correct and retry."""
+    try:
+        from .automation_creator import create_automation
+        alias = (args.get("alias") or "").strip()
+        if not alias:
+            return json.dumps({"success": False, "error": "alias is required."})
+        if not args.get("trigger") or not args.get("action"):
+            return json.dumps({
+                "success": False,
+                "error": "Both trigger and action are required.",
+            })
+        result = await create_automation(
+            hass,
+            alias=alias,
+            description=args.get("description", ""),
+            trigger=args.get("trigger"),
+            condition=args.get("condition"),
+            action=args.get("action"),
+            mode=args.get("mode", "single"),
+            validate=True,
+        )
+        return json.dumps(result)
+    except Exception as exc:
+        return json.dumps({"success": False, "error": str(exc)})
+
+
 async def _exec_root_cause(hass: HomeAssistant, args: dict) -> str:
     """Root-cause analysis: gather evidence in an executor, return a compact
     findings block the model can narrate from."""
@@ -2948,6 +3036,7 @@ _TOOL_MAP = {
     "wellbeing_context":   _exec_wellbeing_context,
     "search_documents":    _exec_search_documents,
     "ingest_documents":    _exec_ingest_documents,
+    "create_automation":   _exec_create_automation,
 }
 
 

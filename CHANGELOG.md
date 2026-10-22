@@ -1,3 +1,26 @@
+## [9.28.0] — Author automations from plain language, validated before install
+
+JARVIS could already *propose* automations from patterns it observed; now it can
+also *build one on request* — and it won't install one that points at a name
+your home doesn't have.
+
+- **New `create_automation` tool.** Ask in plain language ("turn the porch light
+  on at sunset") and JARVIS assembles a real Home Assistant automation and
+  installs it. Distinct from `approve_suggestion`, which installs a pattern
+  JARVIS already learned.
+- **Entity + service validation before install.** Every `entity_id` and service
+  the automation references is checked against the live Home Assistant instance
+  first. A guessed or misspelled name (the classic LLM failure that produces an
+  automation which silently never fires) is refused up front, with the closest
+  real name handed back so JARVIS can correct and retry — nothing is written on
+  a bad name. Templates (`{{ … }}`) and sentinel values (`all`/`none`) are
+  skipped, and validation is **fail-open** (a validator error never blocks a
+  legitimate automation).
+- **Opt-in, zero behaviour change elsewhere.** Validation is a new `validate`
+  flag on `automation_creator.create_automation`, exercised only by the new
+  conversational tool. The existing `jarvis.create_automation` service and the
+  learned-suggestion installer are untouched.
+
 ## [9.27.0] — Authority parity observer (enforce-allowlist Step B)
 
 Fills in the engine-vs-gate agreement evidence the authority enforce-allowlist
