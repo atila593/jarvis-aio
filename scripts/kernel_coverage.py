@@ -324,10 +324,16 @@ _NON_ACTUATOR_TOOLS: frozenset[str] = frozenset({
     "usual_times", "search_documents", "ingest_documents",
     # memory / preferences
     "remember", "ignore_entity", "unignore_entity",
-    # scheduling / goals / suggestions (bookkeeping, not home actuation)
+    # scheduling / goals / suggestions (bookkeeping, not home actuation).
+    # create_automation INSTALLS an HA automation (config write + reload), the
+    # same class of action as approve_suggestion — it does not itself command a
+    # device; the automation it writes runs through Home Assistant's own engine
+    # and is visible/editable there. It is, if anything, more governed than
+    # approve_suggestion: every entity_id and service is validated against the
+    # live home before install.
     "schedule_followup", "manage_followups", "create_goal", "update_goal",
     "manage_goals", "review_suggestions", "approve_suggestion",
-    "dismiss_suggestion", "manage_autonomy",
+    "create_automation", "dismiss_suggestion", "manage_autonomy",
     # alert / intrusion acknowledgement (state of an alert, not a device)
     "dismiss_intrusion", "acknowledge_alert",
 })
