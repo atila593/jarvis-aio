@@ -259,6 +259,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     sched.add("authority-parity-save", 300, _save_authority_parity)
 
+    # ── Authority parity OBSERVER (Step B — log-only) ────────────────────────
+    # The agent path only feeds the parity tally when JARVIS itself actuates a
+    # protected device, which for locks / alarms / covers barely ever happens —
+    # so the per-capability agreement the enforce-allowlist widening needs stays
+    # blank. This observer watches those domains for real state transitions
+    # (however initiated) and records engine-vs-gate parity into the same tally,
+    # so the decision becomes data-driven. Observe-only; never touches the
+    # authoritative path. Kill-switch: authority_observer.AUTHORITY_OBSERVER_ENABLED.
+    try:
+        from . import authority_observer as _authority_observer
+        _authority_parity_unsub = _authority_observer.register(hass)
+        if _authority_parity_unsub is not None:
+            resources.add_unsubs([_authority_parity_unsub])
+    except Exception as exc:  # never fail setup over a log-only observer
+        _LOGGER.debug("authority observer setup skipped: %s", exc)
+
     # ── Continuity of self (roadmap Phase I, I2 — shadow) ───────────────────
     # Log what JARVIS was in the middle of before this restart (active goals,
     # open situations, mode), then capture a fresh agency snapshot periodically

@@ -140,11 +140,27 @@ async def async_get_config_entry_diagnostics(hass, entry) -> dict:
     # answerable from the downloaded diagnostics instead of only the logs.
     try:
         from .. import authority_bridge as _ab
-        diag["authority_parity"] = {
+        block = {
             "enforce_on": bool(getattr(_ab, "AUTHORITY_ENFORCE", False)),
             "enforced_capabilities": sorted(_ab.AUTHORITY_ENFORCE_CAPABILITIES),
             "tally": _redact(_ab.parity_summary(hass)),
         }
+        # Step B — surface whether the log-only state-change observer is on and
+        # how many protected devices it's watching, so an empty tally can be read
+        # as "no traffic yet" vs. "nothing is feeding it".
+        try:
+            from .. import authority_observer as _ao
+            watched = sum(
+                1 for s in hass.states.async_all()
+                if s.entity_id.split(".", 1)[0] in _ao._WATCHED_DOMAINS)
+            block["observer"] = {
+                "enabled": bool(_ao._enabled(hass)),
+                "watched_domains": list(_ao._WATCHED_DOMAINS),
+                "watched_entities": watched,
+            }
+        except Exception as exc:  # observer is optional; never fail the block
+            block["observer_error"] = str(exc)[:200]
+        diag["authority_parity"] = block
     except Exception as exc:
         diag["authority_parity_error"] = str(exc)[:200]
 
