@@ -1,3 +1,22 @@
+## [9.29.0] — Security-posture audit
+
+A read-only check of the home's security posture — "is anything about this
+setup leaving the home exposed, and are the dangerous actions actually gated?"
+
+- **New `security_audit` tool.** Ask "is my setup secure?" / "can someone unlock
+  the door by voice?" and JARVIS reports findings, ordered most-serious first:
+  - **remote access over plain `http://`** (unencrypted external URL) — high;
+  - **sensitive actions voice can trigger without confirmation** — unlock,
+    disarm, or open a garage/gate/door cover that isn't behind JARVIS's
+    voice-confirm gate — medium, listed per entity;
+  - **security entities exposed to the agent** (locks/alarms/cameras) — info;
+  - **long-lived access tokens**, flagging any never used — info/low.
+- **Read-only and infra-free.** It scans nothing on the network and changes
+  nothing — it only reads what Home Assistant already knows in-process, in
+  keeping with JARVIS's no-external-infrastructure design. Every check is
+  fail-soft: one that errors is simply absent from the report rather than
+  sinking the audit.
+
 ## [9.28.0] — Author automations from plain language, validated before install
 
 JARVIS could already *propose* automations from patterns it observed; now it can

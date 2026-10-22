@@ -145,6 +145,7 @@ tools the agent invokes on its own; most also have a panel control.
 **Safety & security**
 - Proactive monitoring for freezing pipes, smoke/CO/water, unauthorized entry, and nighttime lockdown — occupancy-gated so enforcement only happens when it should.
 - Confirm or dismiss intrusion events and acknowledge alerts by voice (`dismiss_intrusion`, `acknowledge_alert`); optional voice-confirmation before sensitive actions like unlocking.
+- **Security-posture audit** (`security_audit`) — ask "is my setup secure?" and JARVIS reports what's exposed or unguarded: remote access served over plain `http://`, sensitive actions (unlock / disarm / open a garage/gate/door) that voice can trigger *without* confirmation, security entities reachable by the agent, and long-lived access tokens. Read-only — it scans nothing on the network and changes nothing; findings come back ordered most-serious first.
 - **Driving mode** — when your phone is connected to the car (Android Auto), route selected proactive alerts (departure/leave-now reminders, briefings, security & hazard alerts) to the car screen instead of speaking them to an empty house, and optionally silence home speakers while driving. Auto-detects the companion app's Android Auto sensor; off until enabled.
 
 **Modes, memory, goals & suggestions**
