@@ -1012,6 +1012,25 @@ JARVIS_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "security_audit",
+            "description": (
+                "Audit the home's security posture and report what's exposed or "
+                "unguarded. Read-only — it checks nothing on the network, changes "
+                "nothing, and only reads what Home Assistant already knows: "
+                "unencrypted remote access (http external URL), sensitive actions "
+                "(unlock / disarm / open a garage/gate/door) that voice can trigger "
+                "WITHOUT confirmation, security entities exposed to the agent, and "
+                "long-lived access tokens. Use when asked 'is my setup secure', "
+                "'any security holes', 'audit the home', or 'can someone unlock the "
+                "door by voice'. Returns findings ordered most-serious first; relay "
+                "them with their severity."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "system_diagnostics",
             "description": (
                 "Check the health of the core services JARVIS depends on — the "
@@ -2236,6 +2255,15 @@ async def _exec_dismiss_suggestion(hass: HomeAssistant, args: dict) -> str:
         return json.dumps({"error": str(exc)})
 
 
+async def _exec_security_audit(hass: HomeAssistant, args: dict) -> str:
+    """Run the read-only HA security-posture audit and return its findings."""
+    try:
+        from . import security_audit
+        return json.dumps(await security_audit.run_audit(hass))
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
+
+
 async def _exec_create_automation(hass: HomeAssistant, args: dict) -> str:
     """Author a new HA automation from a plain-language request, validating every
     entity_id and service against the live home before install (validate=True).
@@ -3037,6 +3065,7 @@ _TOOL_MAP = {
     "search_documents":    _exec_search_documents,
     "ingest_documents":    _exec_ingest_documents,
     "create_automation":   _exec_create_automation,
+    "security_audit":      _exec_security_audit,
 }
 
 
