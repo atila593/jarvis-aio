@@ -120,6 +120,11 @@ async def test_arrival_triggers_named_welcome_once_after_cooldown(pb, fake_hass,
         calls.append((args, kwargs))
 
     monkeypatch.setattr(pb, "_trigger_briefing", trigger)
+    # This test is about arrival→trigger wiring + the cooldown, not the
+    # welcome-home gate. That gate (#400) suppresses greetings during quiet
+    # hours via the real wall-clock, which makes the test flaky overnight; pin
+    # it open so the assertion is deterministic at any hour / timezone.
+    monkeypatch.setattr(pb, "_arrival_greeting_allowed", lambda *a, **k: True)
     pb._STATE.hass = fake_hass
     pb._STATE.running = True
     event = _event(
@@ -142,6 +147,10 @@ async def test_arrival_uses_entity_name_and_ignores_non_arrival(pb, fake_hass, m
         calls.append((args, kwargs))
 
     monkeypatch.setattr(pb, "_trigger_briefing", trigger)
+    # Pin the welcome-home gate open — this test checks entity-name extraction
+    # and the non-arrival filter, not the quiet-hours gate (whose real wall-clock
+    # check otherwise fails this test overnight).
+    monkeypatch.setattr(pb, "_arrival_greeting_allowed", lambda *a, **k: True)
     pb._STATE.hass = fake_hass
     pb._STATE.running = True
     pb._on_state_changed(_event(

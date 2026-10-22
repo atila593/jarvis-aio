@@ -1,3 +1,30 @@
+## [9.27.0] — Authority parity observer (enforce-allowlist Step B)
+
+Fills in the engine-vs-gate agreement evidence the authority enforce-allowlist
+widening has been waiting on — the piece a two-week diagnostics snapshot showed
+was missing.
+
+- **Why:** the authority parity tally only recorded a sample when JARVIS itself
+  actuated a protected device through the agent (`control_device` / bulk). For
+  the security capabilities the allowlist covers — locks, alarms, covers — that
+  almost never happens: people operate those from a dashboard, a phone, or
+  physically. So the per-capability `[agree, disagree]` buckets the widening
+  decision needs stayed empty no matter how long the system ran
+  (`agree=0, disagree=0, by_capability={}`).
+- **New `authority_observer` (log-only).** Watches the enforce-allowlisted
+  domains (`lock`, `alarm_control_panel`, `cover`) for real state transitions —
+  however they were initiated — maps each to the capability it represents, and
+  records engine-vs-gate parity into the **same** tally, asking "had this come
+  through JARVIS, would the capability engine have agreed with the gate?" Built
+  with the same minimal context the agent path uses, so the samples are directly
+  comparable. Observe-only: it never calls a service, never blocks, never raises
+  into the bus. Kill-switch: `authority_observer.AUTHORITY_OBSERVER_ENABLED` /
+  the `authority_observer` config key.
+- **Diagnostics.** The `authority_parity` block now also reports the observer's
+  state (`enabled`, `watched_domains`, `watched_entities`), so an empty tally can
+  be read as "no protected-device traffic yet" rather than "nothing is feeding
+  it." No behaviour change anywhere on the authoritative actuator path.
+
 ## [9.26.0] — Import a floor plan from a vacuum map (#405)
 
 You no longer have to draw or upload a floor plan by hand — JARVIS can pull one
