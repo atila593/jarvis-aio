@@ -1,3 +1,26 @@
+## [9.30.0] — Optional pgvector memory backend (opt-in; SQLite stays the default)
+
+Long-term memory can now live in your own Postgres + pgvector, for a household
+whose memory has outgrown SQLite — without giving up JARVIS's no-infrastructure
+promise for everyone else.
+
+- **SQLite/ChromaDB remain the zero-infra default.** Nothing changes on a stock
+  install; the pgvector path is inert unless you opt in.
+- **Opt-in via two config keys.** Set `memory_backend: pgvector` and a
+  `memory_pgvector_dsn` (e.g. `postgresql://user:pass@host:5432/jarvis`) and the
+  semantic store moves to pgvector: it creates the `vector` extension and a
+  `jarvis_memory` table, embeds with the same Ollama model the rest of JARVIS
+  uses, and does nearest-neighbour search by cosine distance.
+- **No new hard dependency.** `psycopg` is deliberately *not* in the manifest —
+  a stock install never pulls it. The backend imports it lazily; if the driver
+  isn't installed or Postgres/pgvector is unreachable, it **falls back to the
+  local default** (and keeps FTS as a durability net so a transient outage
+  degrades to keyword search rather than losing writes). Vectors are passed as
+  `'[…]'::vector` literals, so only `psycopg` is needed, not the `pgvector`
+  helper package.
+- Runs entirely in the executor (memory calls are already off the event loop),
+  so the blocking driver and embed calls never touch the loop.
+
 ## [9.29.0] — Security-posture audit
 
 A read-only check of the home's security posture — "is anything about this

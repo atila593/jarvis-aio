@@ -30,6 +30,24 @@ _DB_PATH = config_path_str("jarvis.db")
 _chromadb_available = False
 _collection = None
 _fts_available = False
+_pgvector_available = False
+
+
+# ── opt-in pgvector backend ──────────────────────────────────────────────────
+
+def _init_pgvector():
+    """Try the opt-in pgvector backend. Only engages when the owner selected it
+    (memory_backend: pgvector + a DSN); otherwise a no-op. Fail-soft."""
+    global _pgvector_available
+    try:
+        from . import memory_pgvector
+        if memory_pgvector.configured() and memory_pgvector.init():
+            _pgvector_available = True
+            _LOGGER.info("JARVIS memory: pgvector backend active")
+            return True
+    except Exception as exc:
+        _LOGGER.debug("JARVIS memory: pgvector init error: %s", exc)
+    return False
 
 
 # ── ChromaDB initialization ─────────────────────────────────────────────────
@@ -79,9 +97,15 @@ def _init_fts():
 
 
 def _ensure_initialized():
-    """Lazy init — try ChromaDB first, then FTS5."""
-    global _chromadb_available, _fts_available
-    if _chromadb_available or _fts_available:
+    """Lazy init. Opt-in pgvector first (when selected); otherwise the zero-infra
+    default — ChromaDB, then FTS5. When pgvector is active, FTS5 is still set up
+    as a cheap local fallback so a transient Postgres outage degrades to keyword
+    search instead of losing writes."""
+    # (the _init_* helpers own the assignments; this function only reads the flags)
+    if _pgvector_available or _chromadb_available or _fts_available:
+        return
+    if _init_pgvector():
+        _init_fts()
         return
     if not _init_chromadb():
         _init_fts()
@@ -113,6 +137,16 @@ def store_memory(
         "conversation_id": conversation_id or "",
         "timestamp": ts,
     }
+
+    if _pgvector_available:
+        try:
+            from . import memory_pgvector
+            if memory_pgvector.store(doc_id, text, metadata):
+                return True
+            # store returned False (e.g. embed briefly unavailable) — fall
+            # through to the local fallback so the write isn't lost.
+        except Exception as exc:
+            _LOGGER.debug("pgvector store failed: %s", exc)
 
     if _chromadb_available and _collection is not None:
         try:
@@ -156,6 +190,13 @@ def search_memory(
         return []
 
     _ensure_initialized()
+
+    if _pgvector_available:
+        try:
+            from . import memory_pgvector
+            return memory_pgvector.search(query, k=k, hours=hours)
+        except Exception as exc:
+            _LOGGER.debug("pgvector search failed: %s", exc)
 
     if _chromadb_available and _collection is not None:
         try:
@@ -243,6 +284,15 @@ def get_memory_stats() -> dict:
         "backend": "none",
         "total_memories": 0,
     }
+
+    if _pgvector_available:
+        try:
+            from . import memory_pgvector
+            stats["backend"] = "pgvector"
+            stats["total_memories"] = memory_pgvector.count()
+            return stats
+        except Exception:
+            pass
 
     if _chromadb_available and _collection is not None:
         try:
