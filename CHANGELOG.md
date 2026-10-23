@@ -1,3 +1,17 @@
+## [9.30.1] — Log when an agent turn makes no tool call (#413 diagnostic)
+
+Observability only — no behaviour change. When the agent finishes a turn without
+calling any tool, it now logs one AGENT line naming the model that actually
+served the turn (including the reasoning-tier fallback, if that took over) and
+how many tools it had available.
+
+This closes a diagnosability gap behind reports like #413, where the model
+narrates an action ("launching Netflix…") but emits no tool call: JARVIS runs
+whatever tool calls a model returns, so a turn with none now shows up explicitly
+in the log instead of as an unexplained gap between "LLM needed" and the reply —
+making it obvious whether the model simply didn't call the tool, and which model
+it was.
+
 ## [9.30.0] — Optional pgvector memory backend (opt-in; SQLite stays the default)
 
 Long-term memory can now live in your own Postgres + pgvector, for a household

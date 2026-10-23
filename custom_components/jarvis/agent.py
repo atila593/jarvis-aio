@@ -3953,6 +3953,17 @@ def _emit_provider_failure_shadow(*, recovered: bool) -> None:
         pass
 
 
+def _no_action_note(served_by: str, n_tools: int) -> str:
+    """One-line diagnostic for a turn that ended with NO tool call at all — the
+    "narrated an action but called nothing" signature (issue #413). Names the
+    model that actually served the turn and how many tools it had, so this case
+    shows up in the AGENT log instead of being an unexplained gap between
+    "LLM needed" and the spoken reply. Informational: a plain Q&A reply also
+    legitimately makes no tool call."""
+    return (f"replied with no tool call — served by {served_by}, "
+            f"{n_tools} tool(s) available")
+
+
 async def run_agent(
     hass: HomeAssistant,
     *,
@@ -4187,6 +4198,10 @@ async def run_agent(
     llm_run_state: dict[str, Any] = {}
     slim_retried = False   # one-shot 413 recovery (drop HA tools + home-state)
     _acted = False         # Phase AE shadow: did this turn execute a tool action?
+    # The model that actually served this turn — starts as the primary, and is
+    # updated if the reasoning-tier fallback takes over, so the #413 diagnostic
+    # names the real responder rather than the configured primary.
+    _served_by = f"{provider_name}/{model}"
 
     _cap = MAX_TOOL_ITERATIONS
     if max_iterations is not None:
@@ -4326,6 +4341,9 @@ async def run_agent(
                         ),
                     )
                     llm_run_state = fallback_run_state
+                    _served_by = (f"{config.get('reasoning_provider') or '?'}/"
+                                  f"{config.get('reasoning_model') or '?'} "
+                                  f"(reasoning-tier fallback)")
                     # Fallback tier recovered — the reasoning backend is up.
                     _emit_provider_failure_shadow(recovered=True)
                     try:
@@ -4367,6 +4385,16 @@ async def run_agent(
             # back to a graceful line so the user sees a reply, not "(no text)".
             _has_text = bool(text and text.strip())
             _emit_conversational_shadow(acted=_acted, answered=_has_text)
+            # Make the "narrated but didn't act" case (issue #413) visible: when a
+            # turn ends without ever calling a tool, log which model served it and
+            # how many tools it had — otherwise this shows up only as an absence
+            # between "LLM needed" and the reply.
+            if not _acted:
+                try:
+                    from .websocket import jarvis_log
+                    jarvis_log("AGENT", _no_action_note(_served_by, len(tools or [])))
+                except Exception:
+                    pass
             return text.strip() if _has_text else _empty_reply_fallback(config)
 
         _LOGGER.info(
