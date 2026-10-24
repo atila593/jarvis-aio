@@ -67,6 +67,10 @@ jobs:
         run: python scripts/kernel_integration_check.py --check
       - name: Certification gate (Phase AE — observable scenario classes stay wired)
         run: python scripts/kernel_certification_check.py --check
+      - name: Closure proof intact (Milestone C — closure test present & not gutted)
+        run: python scripts/kernel_closure_check.py --check
+      - name: Closure gate (Milestone C — the loop actually closes end-to-end)
+        run: python -m pytest tests/unit/test_cognitive_loop_closure.py -q
       - name: Unit tests
         run: python -m pytest tests/ -q
 
