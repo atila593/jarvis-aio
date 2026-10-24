@@ -1053,6 +1053,19 @@ async def _speak(message: str, *, targets: list[str]) -> None:
         _opts = {}
         _lang = None
 
+    # Echo / Alexa Media Player players can't play tts.speak audio — route them
+    # through Chime TTS when it is installed; everything else stays on tts.speak.
+    try:
+        from .tts_helper import split_alexa_for_echo, async_speak_alexa
+        _alexa, targets = split_alexa_for_echo(hass, targets)
+        if _alexa:
+            await async_speak_alexa(
+                hass, message, tts_entity, _alexa,
+                opts=_opts, lang=_lang, context="observer",
+            )
+    except Exception as exc:
+        _LOGGER.warning("Observer Echo routing failed: %s", exc)
+
     for target in targets:
         try:
             _data = {
