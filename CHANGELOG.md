@@ -1,3 +1,25 @@
+## [9.30.2] — Email: find the IMAP password in a secrets.yaml HA can read, and say why when it's missing
+
+Reported on the community forum: JARVIS said the Gmail app password was "not in
+secrets.yaml" while it clearly was.
+
+- **secrets.yaml is now read the way Home Assistant reads it.** JARVIS parsed the
+  file with plain `yaml.safe_load`, which rejects HA-only tags. One entry like
+  `!env_var` or `!include` anywhere in the file made JARVIS treat the *whole*
+  file as empty, so every secret in it, including `jarvis_imap_password` and
+  provider API keys, read as missing. `!env_var NAME [default]` is now resolved
+  like HA does; any other tag affects only its own entry.
+- **"No IMAP password" now says which problem it is:** the file doesn't exist,
+  it has a YAML syntax error (the HA log names the line), the entry is missing,
+  or it's empty. If another entry looks like the intended one (its name contains
+  "imap" or "mail"), the error names it.
+- **A password typed into the "secrets.yaml key" field is no longer echoed back.**
+  That field takes the entry's *name* (default `jarvis_imap_password`). A value
+  that doesn't look like a name is left out of the error, which explains the
+  field instead.
+- **The "could not read secrets.yaml" log warning no longer quotes the offending
+  line,** which could contain a credential; it reports the line and column only.
+
 ## [9.30.1] — Log when an agent turn makes no tool call (#413 diagnostic)
 
 Observability only — no behaviour change. When the agent finishes a turn without

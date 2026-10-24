@@ -44,6 +44,39 @@ _LOGGER = logging.getLogger(__name__)
 # secrets.yaml key holding the IMAP password (overridable via imap_secret_key).
 DEFAULT_SECRET_KEY = "jarvis_imap_password"
 
+# What a secrets.yaml entry NAME looks like. A Gmail app password has no
+# underscore, so a "key" without one is more likely the password itself pasted
+# into the key field — never echo that back into chat or the logs.
+_KEY_NAME_RE = re.compile(r"^[A-Za-z0-9.-]*_[A-Za-z0-9_.-]*$")
+
+
+def _missing_password_error(secret_key: str, diag: dict) -> str:
+    """An actionable reason the IMAP password wasn't found (never the value)."""
+    path = diag.get("path") or "secrets.yaml"
+    status = diag.get("status")
+    looks_like_name = secret_key == DEFAULT_SECRET_KEY or bool(_KEY_NAME_RE.match(secret_key))
+    name = f"'{secret_key}'" if looks_like_name else "the key set in JARVIS email settings"
+    if status == "no_file":
+        return (f"no IMAP password — {path} doesn't exist; create it with a line "
+                f"`{secret_key if looks_like_name else DEFAULT_SECRET_KEY}: <your app password>`")
+    if status == "unreadable":
+        return (f"no IMAP password — {path} could not be read (YAML syntax error); "
+                "the Home Assistant log names the line. JARVIS ignores the whole "
+                "file until it parses")
+    if status == "empty":
+        msg = f"no IMAP password — {name} in {path} is empty"
+    else:
+        msg = f"no IMAP password — {name} is not in {path}"
+    if not looks_like_name:
+        msg += (". The 'secrets.yaml key' setting should be the NAME of the entry "
+                f"(default {DEFAULT_SECRET_KEY}), not the password itself")
+    similar = diag.get("similar") or []
+    if similar:
+        msg += (f". Found similar entries: {', '.join(similar)} — set the "
+                "'secrets.yaml key' in JARVIS email settings to that name, or rename the entry")
+    return msg
+
+
 _MAX_EMAILS = 20          # hard ceiling regardless of the requested limit
 _MAX_BODY = 1500          # chars per message body after sanitizing
 _MAX_SUBJECT = 300        # chars per subject after sanitizing
@@ -239,9 +272,9 @@ async def fetch_recent(hass, *, limit: int = 5, unread_only: bool = False,
     from . import ha_secrets
     password = await ha_secrets.async_get_secret(hass, secret_key, "")
     if not password:
-        from .paths import config_path
-        return {"error": (f"no IMAP password — add '{secret_key}' to "
-                          f"{config_path('secrets.yaml', hass=hass)}")}
+        diag = await ha_secrets.async_diagnose_secret(
+            hass, secret_key, ("imap", "mail"))
+        return {"error": _missing_password_error(secret_key, diag)}
 
     try:
         return await hass.async_add_executor_job(

@@ -48,6 +48,63 @@ def _reset_secrets_cache() -> None:
     _SECRETS_CACHE = None
 
 
+def _secrets_loader():
+    """A SafeLoader that reads secrets.yaml the way Home Assistant does.
+
+    HA's own loader accepts tags like `!env_var NAME [default]` and
+    `!include`. Plain safe_load rejects any of them, which made JARVIS treat
+    the WHOLE file as empty — a correct `jarvis_imap_password` line was then
+    reported as missing because of an unrelated entry elsewhere. `!env_var` is
+    resolved like HA does; any other tag yields None for that one entry only.
+    """
+    import os
+    import yaml
+
+    class _Loader(yaml.SafeLoader):
+        pass
+
+    def _env_var(loader, node):
+        parts = str(loader.construct_scalar(node)).split(None, 1)
+        if not parts:
+            return None
+        return os.environ.get(parts[0], parts[1] if len(parts) > 1 else None)
+
+    def _unsupported(loader, suffix, node):
+        return None
+
+    _Loader.add_constructor("!env_var", _env_var)
+    _Loader.add_multi_constructor("!", _unsupported)
+    return _Loader
+
+
+def _load_secrets(path: Path) -> tuple[dict, str]:
+    """Parse secrets.yaml → (mapping, status). Status is "ok", "no_file" or
+    "unreadable". Never raises. Blocking."""
+    if not path.exists():
+        return {}, "no_file"
+    try:
+        import yaml  # PyYAML ships with Home Assistant core
+        with open(path) as f:
+            data = yaml.load(f, Loader=_secrets_loader())  # noqa: S506 — SafeLoader subclass
+    except Exception as exc:  # yaml.YAMLError, OSError, UnicodeDecodeError, …
+        # Log the position and the problem only: str(exc) quotes the offending
+        # line, and in this file that line may hold a credential.
+        mark = getattr(exc, "problem_mark", None)
+        where = f" (line {mark.line + 1}, column {mark.column + 1})" if mark else ""
+        problem = getattr(exc, "problem", None) or type(exc).__name__
+        _LOGGER.warning("JARVIS: could not read %s%s: %s", path, where, problem)
+        return {}, "unreadable"
+    if isinstance(data, dict):
+        return data, "ok"
+    if data is not None:
+        _LOGGER.warning(
+            "JARVIS: %s top level is %s, expected a mapping — ignoring",
+            path, type(data).__name__,
+        )
+        return {}, "unreadable"
+    return {}, "ok"
+
+
 def _read_secrets(path: Path | None = None, force: bool = False) -> dict:
     """Parse secrets.yaml into a dict.
 
@@ -66,25 +123,46 @@ def _read_secrets(path: Path | None = None, force: bool = False) -> dict:
     if (use_default and not force and _SECRETS_CACHE is not None
             and _SECRETS_CACHE[0] == path):
         return _SECRETS_CACHE[1]
-    result: dict = {}
-    try:
-        if path.exists():
-            import yaml  # PyYAML ships with Home Assistant core
-            with open(path) as f:
-                data = yaml.safe_load(f)
-            if isinstance(data, dict):
-                result = data
-            elif data is not None:
-                _LOGGER.warning(
-                    "JARVIS: %s top level is %s, expected a mapping — ignoring",
-                    path, type(data).__name__,
-                )
-    except Exception as exc:  # yaml.YAMLError, OSError, UnicodeDecodeError, …
-        _LOGGER.warning("JARVIS: could not read %s: %s", path, exc)
-        result = {}
+    result, _status = _load_secrets(Path(path))
     if use_default:
         _SECRETS_CACHE = (path, result)
     return result
+
+
+def diagnose_secret_sync(key: str, hint_words: tuple = (),
+                         path: Path | None = None) -> dict:
+    """Why a secret lookup came back empty, for a helpful error message.
+
+    Returns {"status", "path", "similar"}: status is "ok", "no_file",
+    "unreadable", "missing" or "empty"; `similar` lists entry NAMES (never
+    values) containing any of `hint_words`. Never raises. Blocking.
+    """
+    path = Path(path) if path is not None else SECRETS_PATH
+    data, status = _load_secrets(path)
+    if status == "ok":
+        if key not in data:
+            status = "missing"
+        elif data.get(key) in (None, ""):
+            status = "empty"
+    words = tuple(w.lower() for w in hint_words)
+    similar = sorted(
+        str(k) for k in data
+        if k != key and any(w in str(k).lower() for w in words)
+    ) if words else []
+    return {"status": status, "path": str(path), "similar": similar[:5]}
+
+
+async def async_diagnose_secret(hass, key: str, hint_words: tuple = ()) -> dict:
+    """diagnose_secret_sync, off the event loop. Never raises."""
+    try:
+        if hass is None:
+            return diagnose_secret_sync(key, hint_words)
+        return await hass.async_add_executor_job(
+            diagnose_secret_sync, key, hint_words, _path_from_hass(hass)
+        )
+    except Exception:
+        _LOGGER.debug("JARVIS async_diagnose_secret failed")
+        return {"status": "unknown", "path": str(SECRETS_PATH), "similar": []}
 
 
 def get_secret_sync(key: str, default: Any = None,
