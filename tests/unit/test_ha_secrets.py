@@ -180,3 +180,52 @@ def test_overlay_legacy_groq_secret_populates_canonical_api_key(hs, tmp_path):
     out = hs.overlay_credentials({}, path=p)
     assert out["api_key"] == "LEGACY_GROQ"
     assert out["groq_api_key"] == "LEGACY_GROQ"
+
+
+# ── HA-compatible parsing + diagnosis (forum report: "says it's not in secrets.yaml") ──
+
+def test_ha_tags_do_not_hide_the_whole_file(hs, tmp_path, monkeypatch):
+    # One HA-only tag used to make safe_load reject the file, so every secret
+    # in it read as missing.
+    monkeypatch.setenv("JARVIS_TEST_PW", "from-env")
+    p = tmp_path / "secrets.yaml"
+    p.write_text("http_pw: !env_var JARVIS_TEST_PW\n"
+                 "missing_env: !env_var JARVIS_NOT_SET fallback\n"
+                 "other: !include other.yaml\n"
+                 "jarvis_imap_password: abcd efgh ijkl mnop\n")
+    data = hs._read_secrets(p)
+    assert data["jarvis_imap_password"] == "abcd efgh ijkl mnop"
+    assert data["http_pw"] == "from-env"
+    assert data["missing_env"] == "fallback"
+    assert data["other"] is None
+
+
+def test_unreadable_log_omits_line_content(hs, tmp_path, caplog):
+    p = tmp_path / "secrets.yaml"
+    p.write_text("a: 1\njarvis_imap_password: \"hunter2\"\n  bad: x\n")
+    assert hs._read_secrets(p) == {}
+    assert "hunter2" not in caplog.text
+    assert "line 3" in caplog.text
+
+
+@pytest.mark.parametrize("text,status", [
+    (None, "no_file"),
+    ("jarvis_imap_password: pw\n", "ok"),
+    ("other: x\n", "missing"),
+    ("jarvis_imap_password: ''\n", "empty"),
+    ("a: [unclosed\n", "unreadable"),
+])
+def test_diagnose_secret_status(hs, tmp_path, text, status):
+    p = tmp_path / "secrets.yaml"
+    if text is not None:
+        p.write_text(text)
+    assert hs.diagnose_secret_sync("jarvis_imap_password", path=p)["status"] == status
+
+
+def test_diagnose_lists_similar_names_not_values(hs, tmp_path):
+    p = tmp_path / "secrets.yaml"
+    p.write_text("gmail_password: s3cret\nIMAP_pw: other\nunrelated: x\n")
+    diag = hs.diagnose_secret_sync("jarvis_imap_password", ("imap", "mail"), path=p)
+    assert diag["status"] == "missing"
+    assert diag["similar"] == ["IMAP_pw", "gmail_password"]
+    assert "s3cret" not in str(diag)

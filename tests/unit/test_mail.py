@@ -197,3 +197,33 @@ async def test_fetch_recent_happy_path(mail, fake_hass, load, fake_imap, monkeyp
     # the resolved password reached the (read-only) session
     inst = fake_imap.instances[-1]
     assert ("login", "u", "s3cret") in inst.cmds
+
+
+# ── actionable "no IMAP password" errors ─────────────────────────────────────
+
+def _diag(status, similar=()):
+    return {"status": status, "path": "/config/secrets.yaml", "similar": list(similar)}
+
+
+def test_missing_password_error_names_default_key(mail):
+    msg = mail._missing_password_error("jarvis_imap_password", _diag("missing"))
+    assert "'jarvis_imap_password' is not in /config/secrets.yaml" in msg
+
+
+def test_missing_password_error_suggests_similar_entry(mail):
+    msg = mail._missing_password_error("jarvis_imap_password",
+                                       _diag("missing", ["gmail_password"]))
+    assert "gmail_password" in msg and "secrets.yaml key" in msg
+
+
+def test_password_pasted_into_key_field_is_not_echoed(mail):
+    pw = "abcdefghijklmnop"       # Gmail app passwords have no underscore
+    for status in ("missing", "empty", "no_file"):
+        msg = mail._missing_password_error(pw, _diag(status))
+        assert pw not in msg
+    assert "not the password itself" in mail._missing_password_error(pw, _diag("missing"))
+
+
+def test_unreadable_secrets_points_at_log(mail):
+    msg = mail._missing_password_error("jarvis_imap_password", _diag("unreadable"))
+    assert "could not be read" in msg and "log" in msg
