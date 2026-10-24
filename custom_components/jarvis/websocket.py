@@ -1614,6 +1614,9 @@ PANEL_WRITABLE_KEYS = {
     "adaptive_suggestion_threshold", # bool: tune the suggestion confidence bar from how welcome recent suggestions were
     "adaptive_cognition_threshold",  # bool: tune the cognition/anticipation salience bar from how welcome recent alerts were
     "tts_use_ha_voice",              # bool: use Home Assistant's configured TTS voice instead of the JARVIS Piper voice
+    "echo_tts_mode",                 # str: auto|off — route Echo/Alexa Media Player speakers through Chime TTS when installed
+    "echo_tts_voice",                # str: voice for Echo speakers only (e.g. fr_FR-tom-medium); blank = same as other speakers
+    "echo_tts_language",             # str: language for Echo speakers only (e.g. fr_FR); blank = default
     "pattern_learn_motion",          # bool: learn motion/occupancy triggers for "when X, do Y" suggestions (rate-limited)
     "suggest_garage_confirmation",   # bool: opt-in to safety-sensitive confirmation-sequence suggestions (e.g. close the garage once the car is confirmed inside)
     "appliance_profile",            # JSON list of declared appliances (name/type/entity/watts)
