@@ -158,6 +158,144 @@ def resolve_tts_for_context(
     return resolve_tts_entity(hass, regular_configured)
 
 
+# ─── Echo / Alexa Media Player: speak through Chime TTS ──────────────────────
+#
+# An Echo cannot fetch the media-source URL that ``tts.speak`` hands to a Cast or
+# Sonos speaker: Alexa plays audio only through the Amazon cloud, so tts.speak →
+# play_media either stays silent or the Echo answers that it cannot connect.
+# Chime TTS (HACS, nimroddolev/chime_tts) renders the TTS engine's audio to an
+# Alexa-compatible mp3 and plays it through alexa_media, so the Echo speaks the
+# same engine/voice as every other speaker.
+#
+# Behaviour is opt-out and inert without Chime TTS: unless ``echo_tts_mode`` is
+# "off", alexa_media players are routed through ``chime_tts.say`` ONLY when that
+# service exists. Everyone else keeps the unchanged tts.speak path.
+#
+# Settings (config.json / runtime_config):
+#   echo_tts_mode      "auto" (default) | "off"
+#   echo_tts_voice     voice name for Echo players (e.g. "fr_FR-tom-medium");
+#                      blank → the same voice JARVIS uses elsewhere
+#   echo_tts_language  language for Echo players (e.g. "fr_FR"); blank → default
+ALEXA_PLATFORM = "alexa_media"
+
+
+def _runtime_value(hass, key, default=""):
+    """First non-empty `key` found in any JARVIS entry's runtime_config, then in
+    config.json. Never raises."""
+    try:
+        from .const import DOMAIN
+        for _ed in (hass.data.get(DOMAIN) or {}).values():
+            if isinstance(_ed, dict):
+                v = (_ed.get("runtime_config") or {}).get(key)
+                if v not in (None, ""):
+                    return v
+    except Exception:
+        pass
+    try:
+        from . import jarvis_config
+        v = jarvis_config.get(key, None)
+        if v not in (None, ""):
+            return v
+    except Exception:
+        pass
+    return default
+
+
+def echo_tts_enabled(hass) -> bool:
+    """False when the owner set ``echo_tts_mode`` to "off"."""
+    mode = str(_runtime_value(hass, "echo_tts_mode", "auto") or "auto").strip().lower()
+    return mode != "off"
+
+
+def chime_tts_available(hass) -> bool:
+    """True when the ``chime_tts.say`` service is registered."""
+    try:
+        return bool(hass.services.has_service("chime_tts", "say"))
+    except Exception:
+        return False
+
+
+def split_alexa_for_echo(hass, speakers):
+    """Split ``speakers`` into ``(alexa_media players, everything else)``.
+
+    The first list is non-empty only when Echo routing is enabled AND Chime TTS is
+    installed. Otherwise returns ``([], list(speakers))`` so callers fall straight
+    through to the existing tts.speak path. Never raises."""
+    speakers = list(speakers or [])
+    try:
+        if not speakers or not echo_tts_enabled(hass) or not chime_tts_available(hass):
+            return [], speakers
+        from homeassistant.helpers import entity_registry as er
+        reg = er.async_get(hass)
+        alexa, rest = [], []
+        for spk in speakers:
+            ent = reg.async_get(spk)
+            if ent is not None and (getattr(ent, "platform", "") or "").lower() == ALEXA_PLATFORM:
+                alexa.append(spk)
+            else:
+                rest.append(spk)
+        return alexa, rest
+    except Exception as exc:
+        _LOGGER.debug("JARVIS: Echo split failed (%s) — using tts.speak for all", exc)
+        return [], speakers
+
+
+async def async_speak_alexa(
+    hass: HomeAssistant,
+    text: str,
+    tts_entity: str | None,
+    speakers: Sequence[str],
+    *,
+    opts: Optional[dict] = None,
+    lang: Optional[str] = None,
+    context: str = "chat",
+) -> bool:
+    """Speak ``text`` on Echo/Alexa players through ``chime_tts.say``.
+
+    ``opts``/``lang`` are the voice options/language JARVIS resolved for the
+    engine; ``echo_tts_voice`` / ``echo_tts_language`` override them for Echo
+    players only. Returns True if the call was handed to at least one speaker.
+    One bad Echo must not silence the others, so a failed batch is retried
+    per speaker."""
+    speakers = list(speakers or [])
+    if not text or not tts_entity or not speakers:
+        return False
+
+    options = dict(opts or {})
+    voice = str(_runtime_value(hass, "echo_tts_voice", "") or "").strip()
+    if voice:
+        options["voice"] = voice
+    language = str(_runtime_value(hass, "echo_tts_language", "") or "").strip() or lang
+
+    base = {"tts_platform": tts_entity, "message": text}
+    if options:
+        base["options"] = options
+    if language:
+        base["language"] = language
+
+    _LOGGER.debug("JARVIS announce [%s] via Chime TTS: %s → %s", context, tts_entity, speakers)
+    try:
+        await hass.services.async_call(
+            "chime_tts", "say", {**base, "entity_id": speakers}, blocking=False,
+        )
+        return True
+    except Exception as exc:
+        _LOGGER.warning("JARVIS Chime TTS batch failed (%s): %s — retrying per speaker",
+                        context, exc)
+    delivered, failed = 0, []
+    for spk in speakers:
+        try:
+            await hass.services.async_call(
+                "chime_tts", "say", {**base, "entity_id": [spk]}, blocking=False,
+            )
+            delivered += 1
+        except Exception as sub:
+            failed.append(f"{spk}: {str(sub)[:60]}")
+    if failed:
+        _LOGGER.warning("JARVIS Chime TTS failed on: %s", failed)
+    return delivered > 0
+
+
 # ─── The announce primitive ──────────────────────────────────────────────────
 
 def _pick_jarvis_voice(runtime_configs, is_piper: bool) -> Optional[str]:
@@ -342,6 +480,17 @@ async def async_announce(
     opts = voice_options(hass, tts_entity, _rcs)
     lang = voice_language(hass, tts_entity, _rcs)
 
+    # Echo / Alexa Media Player players can't play tts.speak audio — hand them to
+    # Chime TTS (when installed) and keep tts.speak for everything else.
+    alexa_ok = False
+    alexa_spk, speakers = split_alexa_for_echo(hass, speakers)
+    if alexa_spk:
+        alexa_ok = await async_speak_alexa(
+            hass, text, tts_entity, alexa_spk, opts=opts, lang=lang, context=context,
+        )
+        if not speakers:
+            return alexa_ok
+
     service_data = {
         "media_player_entity_id": list(speakers),
         "message": text,
@@ -428,4 +577,4 @@ async def async_announce(
         else:
             _LOGGER.warning("JARVIS TTS failed on every speaker (%s): %s",
                             context, failed)
-        return delivered > 0
+        return delivered > 0 or alexa_ok
