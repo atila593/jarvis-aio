@@ -35,17 +35,29 @@ live home is an **owner-gated** step (see `docs/JARVIS_CONSTITUTION.md`, invaria
 on authority).
 
 The owner approved a **staged** roll-out of the decision-primitive flips, safest
-first. Two have been taken, both on the *discretionary autonomous* path and both
-degrading gracefully (worst case: one learned-convenience action is skipped and
+first. Three have been taken. Two are on the *discretionary autonomous* path and
+degrade gracefully (worst case: one learned-convenience action is skipped and
 re-surfaces next cycle — never an unsafe or missed-safety outcome), each with a
 fail-open gate and a one-line kill-switch: **`budget` → enforce** (G1, a
 self-imposed hourly ceiling) and **`loop_detect` → enforce** (G2, suppress a
-thrashing action). The remaining flips are still un-taken: the `hazard`/`delivery`
-situations (G3), and — behind an explicit owner pause — **`authority`** (G4) and
-the **`intrusion`** situation (G5), the two highest-risk ones. In short: a read facade may reach enforce on its own;
-a *non-safety, self-imposed* decision primitive may reach it with owner approval
-and a kill-switch; an authority/situation/safety decision may not, except by an
-explicit per-flip owner go/no-go.
+thrashing action). The third is **`authority` → enforce** (G4), taken in a
+deliberately **scoped** form: the engine is authoritative only for a bounded
+allowlist of security capabilities (unlock, latch-open, garage/cover open, alarm
+arm/disarm) via a max-restriction belt that can only *tighten* the legacy gate,
+never loosen it, fails safe to the legacy outcome on any engine fault, and is
+kill-switchable (`AUTHORITY_ENFORCE`). The exact boundary — which paths consult
+it, and the deliberate safety-critical exemption — is in the per-primitive
+**`authority`** note below, and the allowlist is drift-guarded by
+`test_authority_enforce.py`.
+
+The remaining flips are still un-taken: the `hazard`/`delivery` situations (G3),
+the **`intrusion`** situation (G5), and the **unscoped** authority flip (making
+the engine authoritative *beyond* that security allowlist) — these stay behind an
+explicit per-flip owner go/no-go. In short: a read facade may reach enforce on
+its own; a *non-safety, self-imposed* decision primitive may reach it with owner
+approval and a kill-switch; a safety/authority decision may reach it only in an
+owner-approved, kill-switched, **fail-safe-bounded** form — and a *broad* flip
+beyond that bound may not, except by an explicit per-flip owner go/no-go.
 
 ## Current matrix
 

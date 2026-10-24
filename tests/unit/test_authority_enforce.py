@@ -101,3 +101,35 @@ def test_real_engine_safe_action_unaffected(ab):
 
 def test_default_kill_switch_is_enforce(ab):
     assert ab.AUTHORITY_ENFORCE is True
+
+
+# ── the enforce boundary matches what KERNEL_ADOPTION.md documents ───────────
+# These guard P0 #2 from the Oct-2026 audit: the doc's "authority is enforced
+# for a bounded security allowlist" must stay reconciled with the code, and no
+# listed capability may be enforcement-in-name-only.
+
+def test_allowlist_is_exactly_the_documented_security_set(ab):
+    # If this set changes, KERNEL_ADOPTION.md's authority boundary note (and the
+    # narrative above the matrix) must change with it — that's the point of
+    # pinning it here. The doc lists: unlock, latch-open, garage/cover open,
+    # alarm arm/disarm.
+    assert ab.AUTHORITY_ENFORCE_CAPABILITIES == frozenset({
+        "alarm_control_panel.alarm_disarm",
+        "alarm_control_panel.alarm_arm_away",
+        "alarm_control_panel.alarm_arm_home",
+        "alarm_control_panel.alarm_arm_night",
+        "lock.unlock",
+        "lock.open",
+        "cover.open",
+        "cover.open_cover",
+    })
+
+
+def test_every_allowlisted_capability_is_actually_gated(ab, monkeypatch):
+    # No capability may be enforced-in-name-only: for each one in the allowlist,
+    # an engine "hold" must gate an action the legacy gate would have allowed.
+    monkeypatch.setattr(ab, "record_control_parity", lambda *a, **k: _fake("confirm"))
+    for cap in ab.AUTHORITY_ENFORCE_CAPABILITIES:
+        domain, service = cap.split(".", 1)
+        ok, _d = ab.enforced_decision(FakeHass(), domain, service, legacy_ok=True)
+        assert ok is False, f"{cap} is in the allowlist but the belt did not gate it"
