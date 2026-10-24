@@ -39,6 +39,7 @@ import sys
 _COMM_DOMAINS = frozenset({
     "notify", "persistent_notification", "tts", "assist_satellite",
     "conversation", "logbook",
+    "chime_tts",   # speech (Chime TTS renders TTS audio for Echo/Alexa players)
 })
 
 # literal (domain, service) that read or reload config rather than mutate devices
