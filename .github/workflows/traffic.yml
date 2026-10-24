@@ -3,7 +3,8 @@ name: Traffic
 # Archives repository traction daily. GitHub discards traffic data (views,
 # clones, referrers, popular pages) after 14 days, so this snapshots it every
 # day onto the orphan `traffic-data` branch, alongside stars/forks/watchers,
-# release downloads and Home Assistant analytics installs. The rendered report
+# release downloads, Home Assistant analytics installs and the HA forum thread
+# (views, replies, anyone waiting on an answer). The rendered report
 # lands in the run summary daily and, on Mondays, in a "Weekly traction
 # report" issue so it reaches the maintainer's notifications.
 #

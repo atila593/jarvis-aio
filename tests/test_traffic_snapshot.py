@@ -79,3 +79,43 @@ def test_week_windows_anchor_on_latest_reported_day(tmp_path):
     report = ts.run(tmp_path, _snap(views), today)
     assert f"## 7 days to {last.isoformat()} vs the 7 before" in report
     assert "| Views | 70 | 70 | +0% |" in report
+
+
+def _topic(posts, views=900):
+    return {
+        "id": 1027117, "slug": "jarvis-aio", "title": "Jarvis-AIO", "views": views,
+        "posts_count": len(posts), "details": {"created_by": {"username": "sam"}},
+        "post_stream": {"posts": [
+            {"post_number": i + 1, "username": u, "created_at": f"{d}T10:00:00Z",
+             "cooked": f"<p>{t} &amp; more</p>"}
+            for i, (u, d, t) in enumerate(posts)
+        ]},
+    }
+
+
+def test_forum_thread_flags_unanswered_post(tmp_path):
+    snap = _snap([])
+    snap["forum"] = _topic([("sam", "2026-10-02", "launch"),
+                            ("william", "2026-10-23", "cant get email working")])
+    report = ts.run(tmp_path, snap, dt.date(2026, 10, 24))
+    assert "**900** views, **1** replies." in report
+    assert "Waiting on a reply:** the newest post is from @william (2026-10-23)" in report
+    assert "- #2 @william (2026-10-23): cant get email working & more" in report
+    assert "launch" not in report.split("New posts")[1]   # the opening post isn't "new"
+
+
+def test_forum_thread_weekly_change_and_answered(tmp_path):
+    first = _snap([])
+    first["forum"] = _topic([("sam", "2026-10-02", "launch")], views=800)
+    ts.run(tmp_path, first, dt.date(2026, 10, 17))
+    later = _snap([])
+    later["forum"] = _topic([("sam", "2026-10-02", "launch"),
+                             ("william", "2026-10-20", "q"), ("sam", "2026-10-21", "a")], views=950)
+    report = ts.run(tmp_path, later, dt.date(2026, 10, 24))
+    assert "**950** views (+150 this week), **2** replies (+2 this week)." in report
+    assert "Waiting on a reply" not in report
+
+
+def test_forum_unreachable_is_reported(tmp_path):
+    report = ts.run(tmp_path, _snap([]), dt.date(2026, 10, 24))
+    assert "Forum thread not reachable today" in report

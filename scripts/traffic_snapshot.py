@@ -10,6 +10,7 @@ everything that signals traction and merges it into a small on-disk history:
   * stars / forks / watchers / issues    (public)
   * release asset downloads              (public)
   * Home Assistant analytics installs    (public; opted-in HA instances only)
+  * the HA community forum thread        (public: views, replies, who's waiting)
 
 It then renders REPORT.md — the page the growth playbook (docs/GROWTH.md) is
 driven from. Stdlib only, so the workflow needs no dependencies.
@@ -21,9 +22,11 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import html
 import json
 import os
 import pathlib
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -31,6 +34,9 @@ import urllib.request
 API = "https://api.github.com"
 HA_ANALYTICS = "https://analytics.home-assistant.io/custom_integrations.json"
 DOMAIN = "jarvis"
+# The JARVIS thread on community.home-assistant.io ("Share your Projects!").
+FORUM = "https://community.home-assistant.io"
+FORUM_TOPIC = os.environ.get("JARVIS_FORUM_TOPIC", "1027117")
 
 
 # ── fetching ─────────────────────────────────────────────────────────────────
@@ -60,6 +66,9 @@ def fetch(repo: str, token: str | None) -> dict:
     grab("referrers", f"{base}/traffic/popular/referrers", token=token)
     grab("paths", f"{base}/traffic/popular/paths", token=token)
     grab("ha_analytics", HA_ANALYTICS)
+    if FORUM_TOPIC:
+        # print=true returns the whole thread (Discourse caps it at 1000 posts).
+        grab("forum", f"{FORUM}/t/{FORUM_TOPIC}.json?print=true", accept="application/json")
     return snap
 
 
@@ -96,7 +105,46 @@ def summarize(snap: dict, today: str) -> dict:
             {"path": p["path"], "count": p["count"], "uniques": p["uniques"]}
             for p in (snap.get("paths") or [])
         ][:10],
+        "forum": summarize_forum(snap.get("forum"), today),
         "errors": sorted(snap.get("errors", {})),
+    }
+
+
+def _excerpt(cooked: str, limit: int = 200) -> str:
+    text = html.unescape(re.sub(r"<[^>]+>", " ", cooked or ""))
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def summarize_forum(topic: dict | None, today: str, days: int = 7) -> dict | None:
+    """The forum thread's numbers plus the posts from the last `days` days.
+
+    `waiting` is true when the newest post isn't by the thread's author, i.e.
+    someone in the thread is waiting on a reply.
+    """
+    if not topic:
+        return None
+    posts = (topic.get("post_stream") or {}).get("posts") or []
+    op = ((topic.get("details") or {}).get("created_by") or {}).get("username") \
+        or (posts[0].get("username") if posts else None)
+    since = (dt.date.fromisoformat(today) - dt.timedelta(days=days)).isoformat()
+    recent = [
+        {"n": p.get("post_number"), "user": p.get("username"),
+         "date": (p.get("created_at") or "")[:10], "excerpt": _excerpt(p.get("cooked", ""))}
+        for p in posts
+        if (p.get("created_at") or "")[:10] >= since and p.get("post_number") != 1
+    ]
+    last = posts[-1] if posts else {}
+    return {
+        "title": topic.get("title"),
+        "url": f"{FORUM}/t/{topic.get('slug', 'topic')}/{topic.get('id', FORUM_TOPIC)}",
+        "views": topic.get("views"),
+        "replies": max((topic.get("posts_count") or 1) - 1, 0),
+        "author": op,
+        "last_poster": last.get("username"),
+        "last_posted_at": (last.get("created_at") or "")[:10],
+        "waiting": bool(last) and last.get("username") != op,
+        "recent": recent[-10:],
     }
 
 
@@ -126,6 +174,30 @@ def _delta(now: int, before: int) -> str:
 
 def _first_on_or_after(points: list[dict], day: str) -> dict | None:
     return next((p for p in points if p["date"] >= day), None)
+
+
+def _forum_section(forum: dict | None, points: list[dict], today: dt.date) -> list[str]:
+    out = ["", "## HA forum thread", ""]
+    if not forum:
+        return out + ["_Forum thread not reachable today._"]
+    then = _first_on_or_after(points, (today - dt.timedelta(days=7)).isoformat())
+    prev = {} if not then or then.get("date") == today.isoformat() else (then.get("forum") or {})
+
+    def wk(field: str) -> str:
+        if not prev or prev.get(field) is None or forum.get(field) is None:
+            return ""
+        return f" ({forum[field] - prev[field]:+d} this week)"
+
+    out.append(f"[{forum.get('title') or 'Thread'}]({forum['url']}): "
+               f"**{forum.get('views')}** views{wk('views')}, "
+               f"**{forum.get('replies')}** replies{wk('replies')}.")
+    if forum.get("waiting"):
+        out += ["", f"> **Waiting on a reply:** the newest post is from "
+                    f"@{forum.get('last_poster')} ({forum.get('last_posted_at')})."]
+    recent = forum.get("recent") or []
+    out += ["", "New posts in the last 7 days:" if recent else "_No new posts in the last 7 days._"]
+    out += [f"- #{p['n']} @{p['user']} ({p['date']}): {p['excerpt']}" for p in recent]
+    return out
 
 
 def render_report(daily: dict, points: list[dict], today: dt.date) -> str:
@@ -178,6 +250,8 @@ def render_report(daily: dict, points: list[dict], today: dt.date) -> str:
     ):
         val = latest.get(field)
         out.append(f"| {label} | {'—' if val is None else val} | {growth(field, 7)} | {growth(field, 30)} |")
+
+    out += _forum_section(latest.get("forum"), points, today)
 
     out += ["", "## Top referrers (rolling 14 days)", ""]
     refs = latest.get("referrers") or []
