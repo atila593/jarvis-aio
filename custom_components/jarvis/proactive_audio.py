@@ -656,6 +656,22 @@ async def _speak_tts(
     # inside options (#404).
     if _lang:
         payload["language"] = _lang
+    # Echo / Alexa Media Player players can't play tts.speak audio — route them
+    # through Chime TTS when it is installed; the rest stay on tts.speak.
+    try:
+        from .tts_helper import split_alexa_for_echo, async_speak_alexa
+        _alexa, _rest = split_alexa_for_echo(hass, targets)
+        if _alexa:
+            await async_speak_alexa(
+                hass, message, tts_entity, _alexa,
+                opts=options, lang=_lang, context="proactive",
+            )
+            targets = _rest
+            payload["media_player_entity_id"] = targets
+    except Exception as exc:
+        _LOGGER.warning("JARVIS: Echo routing failed (proactive): %s", exc)
+    if not targets:
+        return
     try:
         await hass.services.async_call(
             "tts", "speak", {**payload, "options": options}, blocking=True
