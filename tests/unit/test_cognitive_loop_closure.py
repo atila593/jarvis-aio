@@ -16,6 +16,7 @@ outcome) keyed to one trace — never "the stage reported itself present". Only
 the model and the verify-sleep are stubbed; every kernel stage runs for real.
 """
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -42,6 +43,14 @@ def _device_responds(h):
             eid = (data or {}).get("entity_id")
             if eid:
                 h.states.set(eid, reached)
+    h.services.async_call = _acall
+
+
+def _device_ignores(h):
+    """A device that accepts the command but never changes state — the service
+    call is recorded, the world does not move. For the fail-to-land branch."""
+    async def _acall(domain, service, data=None, blocking=True, **kw):
+        h.service_calls.append((domain, service, dict(data or {})))
     h.services.async_call = _acall
 
 
@@ -194,3 +203,153 @@ async def test_stubbed_model_decision_drives_the_real_closure(agent, load, monke
     # and the loop verified the result
     assert agent._OUT_VERIFIED in outcomes
     assert isinstance(reply, str)
+
+
+# ── C4: the branches — denied / failed / offline / restart ───────────────────
+# C1/C2 prove the happy path closes. These prove the loop is equally honest when
+# it does NOT close: a blocked, failed, or unperceivable action must fabricate no
+# closure, and a closure is claimed only once it has actually been observed.
+
+@pytest.mark.asyncio
+async def test_denied_action_fabricates_no_closure(agent, load, monkeypatch):
+    # DENIED. The engine belt holds an allowlisted security capability
+    # (cover.open) even with the legacy gate forced to allow. A held action must
+    # produce NOTHING downstream: no service call, no actuation event, no
+    # terminal outcome — the loop never half-acts.
+    actuation = load("actuation")
+    authority_bridge = load("authority_bridge")
+    policy = load("policy")
+    _no_verify_sleep(agent, monkeypatch)
+
+    async def _allow(hass, domain, service, entity_id="", label=""):
+        return True, ""
+    monkeypatch.setattr(policy, "confirm_gate", _allow)
+    # Make the engine deterministically HOLD (independent of identity wiring).
+    monkeypatch.setattr(authority_bridge, "record_control_parity",
+                        lambda *a, **k: SimpleNamespace(decision="confirm",
+                                                        reason="test"))
+
+    events = []
+    monkeypatch.setattr(actuation, "emit_event",
+                        lambda *a, **k: events.append(k.get("request")))
+    outcomes = []
+    monkeypatch.setattr(actuation, "outcome",
+                        lambda request, status, hass, entity_id, detail="":
+                        outcomes.append(status))
+
+    h = FakeHass()
+    h.states.set("cover.garage", "closed", friendly_name="Garage door")
+    _device_responds(h)
+
+    res = json.loads(await agent._exec_control_device(
+        h, {"action": "open", "entity_id": "cover.garage"}))
+    await h.drain()
+
+    assert res.get("status") == "awaiting_confirmation"
+    assert ("cover", "open_cover") not in [(d, s) for d, s, _ in h.service_calls]
+    assert events == [], "a blocked action must not emit an actuation event"
+    assert outcomes == [], "a blocked action must not record a terminal outcome"
+
+
+@pytest.mark.asyncio
+async def test_action_that_never_lands_closes_as_mismatch_not_verified(
+        agent, load, monkeypatch):
+    # FAILED. The device accepts the command but never reaches the expected
+    # state. The verify stage must read the world back, retry once, and then
+    # record an HONEST terminal outcome — MISMATCH, on the same request — never a
+    # false VERIFIED. This is the loop refusing to claim a closure that the world
+    # never actually reached.
+    actuation = load("actuation")
+    database = load("database")
+    correlation = load("kernel.correlation")
+    _no_verify_sleep(agent, monkeypatch)
+    monkeypatch.setattr(database, "save_activity", lambda **k: None)
+
+    h = FakeHass()
+    h.states.set("light.den", "off", friendly_name="Den light")
+    _device_ignores(h)          # records the calls, never changes state
+
+    outcomes = []
+    monkeypatch.setattr(actuation, "outcome",
+                        lambda request, status, hass, entity_id, detail="":
+                        outcomes.append({"request": request, "status": status}))
+
+    with correlation.scope("loop-c4-mismatch"):
+        await agent._exec_control_device(
+            h, {"action": "turn_on", "entity_id": "light.den"})
+    await h.drain()
+
+    # the service call DID land (the seam acted, and verify retried once) ...
+    assert ("light", "turn_on") in [(d, s) for d, s, _ in h.service_calls]
+    # ... but the world never reached "on", so the one terminal outcome is a
+    # MISMATCH keyed to the same trace — not a VERIFIED.
+    assert len(outcomes) == 1, "verify must record exactly one terminal outcome"
+    assert outcomes[0]["status"] == agent._OUT_MISMATCH
+    assert outcomes[0]["status"] != agent._OUT_VERIFIED
+    assert getattr(outcomes[0]["request"], "correlation_id", None) == \
+        "loop-c4-mismatch"
+
+
+@pytest.mark.asyncio
+async def test_unperceivable_device_is_refused_with_no_actuation(
+        agent, load, monkeypatch):
+    # OFFLINE / unknown. A device the world-model can't see at all: the loop must
+    # refuse at the world-read, before any authorize or act. It never actuates
+    # something it cannot perceive, and records no closure.
+    actuation = load("actuation")
+    _no_verify_sleep(agent, monkeypatch)
+
+    events = []
+    monkeypatch.setattr(actuation, "emit_event",
+                        lambda *a, **k: events.append(k.get("request")))
+    outcomes = []
+    monkeypatch.setattr(actuation, "outcome",
+                        lambda request, status, hass, entity_id, detail="":
+                        outcomes.append(status))
+
+    h = FakeHass()              # light.ghost is never set — unknown to the world
+    _device_responds(h)
+
+    res = json.loads(await agent._exec_control_device(
+        h, {"action": "turn_on", "entity_id": "light.ghost"}))
+    await h.drain()
+
+    assert "not found" in (res.get("error") or "")
+    assert h.service_calls == [], "nothing may be actuated for an unknown entity"
+    assert events == []
+    assert outcomes == []
+
+
+@pytest.mark.asyncio
+async def test_closure_is_only_claimed_once_verify_actually_runs(
+        agent, load, monkeypatch):
+    # RESTART. The verify-after-act is SCHEDULED, not awaited inline — it records
+    # the terminal outcome only when it actually runs. If the process is torn
+    # down between act and verify (a restart), no VERIFIED is on record: the loop
+    # never claims a closure it hasn't observed. Draining (verify runs) then
+    # produces it — closure is gated on observation, not on the act alone.
+    actuation = load("actuation")
+    _no_verify_sleep(agent, monkeypatch)
+
+    h = FakeHass()
+    h.states.set("light.den", "off", friendly_name="Den light")
+    _device_responds(h)
+
+    outcomes = []
+    monkeypatch.setattr(actuation, "outcome",
+                        lambda request, status, hass, entity_id, detail="":
+                        outcomes.append(status))
+
+    res = json.loads(await agent._exec_control_device(
+        h, {"action": "turn_on", "entity_id": "light.den"}))
+
+    # The act happened and the world moved — but verify has NOT run yet.
+    assert res.get("success") is True
+    assert h.states.get("light.den").state == "on"
+    assert ("light", "turn_on") in [(d, s) for d, s, _ in h.service_calls]
+    assert outcomes == [], "no closure may be claimed before verify runs"
+
+    # Now the scheduled verify runs (as it would after the loop comes back).
+    await h.drain()
+    assert outcomes == [agent._OUT_VERIFIED], \
+        "closure is recorded exactly when the deferred verify observes the world"
