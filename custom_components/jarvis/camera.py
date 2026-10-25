@@ -1215,17 +1215,35 @@ async def async_analyze_camera(
         frame_bytes = [one] if one else []
 
     if not frame_bytes:
-        msg = (
-            f"{honorific}, I could not get a usable image from {camera_name}. "
-            f"This camera may use WebRTC (no snapshot support) or be offline."
-        )
+        # Spoken in the household language (this message used to be English-only,
+        # whatever output_language said).
+        try:
+            from .language import configured_language
+            _lang = configured_language(hass)
+        except Exception:
+            _lang = "en"
+        if _lang == "fr":
+            msg = (
+                f"{honorific}, je n'ai pas pu obtenir d'image exploitable de "
+                f"{camera_name}. Cette caméra utilise peut-être WebRTC (pas de "
+                f"snapshot) ou est hors ligne."
+            )
+        else:
+            msg = (
+                f"{honorific}, I could not get a usable image from {camera_name}. "
+                f"This camera may use WebRTC (no snapshot support) or be offline."
+            )
         _LOGGER.error("JARVIS: no usable image for %s", entity_id)
         try:
             from .websocket import jarvis_log
             jarvis_log("CAMERA", f"{camera_name}: no usable image (WebRTC/offline?)")
         except Exception:
             pass
-        if announce:
+        # An automatic / event-triggered review (gate_announce) never speaks a
+        # technical failure: motion fires often, so a camera with no snapshot
+        # support (WebRTC) would nag out loud every few minutes. It is still
+        # logged above; a manual request (gate_announce False) hears it.
+        if announce and not gate_announce:
             await async_announce(hass, msg, tts_entity, speakers)
         return {"success": False, "error": "no_image", "camera": camera_name}
 
